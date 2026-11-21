@@ -3,15 +3,16 @@
 #  AutoClicker 打包脚本 (bash)
 #
 #  - 调用 script/gen_readme.py 生成 README.md（行数/目录树/git 版本）
-#  - 打包源码为 dist/ 下的归档，排除 .venv / __pycache__ / log / dist / build
-#  - 可选 --build-exe：Windows 上（Git Bash / MSYS2）用 PyInstaller 打 exe
+#  - Windows 上（Git Bash / MSYS2）：用 PyInstaller 打单文件 exe（默认动作）
+#  - 非 Windows：只能打源码归档（PyInstaller 不能跨平台交叉编译）
 #
 #  用法:
 #    ./script/package.sh
 #    ./script/package.sh --check-only     # 只检测 dist/ 产物是否最新，不打
 #    ./script/package.sh --force          # 产物已最新也强制重新打包
 #    ./script/package.sh --version 1.1.0
-#    ./script/package.sh --build-exe
+#    ./script/package.sh --no-exe         # 跳过 exe，只做别的
+#    ./script/package.sh --with-source    # Windows 上额外再打一份源码归档
 #    ./script/package.sh --no-zip
 #    ./script/package.sh --no-readme
 #    ./script/package.sh --no-deps
@@ -29,12 +30,13 @@ cd "$PROJECT_DIR"
 
 # ---------- 默认参数 ----------
 VERSION="1.0.0"
-BUILD_EXE=0
-DO_ZIP=1
+BUILD_EXE=1      # 默认打 exe（非 Windows 平台会自动跳过）
+DO_ZIP=0        # 源码归档只在 --with-source 时打
 DO_README=1
 DO_DEPS=1
 CHECK_ONLY=0
 FORCE=0
+WITH_SOURCE=0
 
 # ---------- 排除规则 ----------
 EXCLUDE_DIRS=(
@@ -70,6 +72,8 @@ while [ $# -gt 0 ]; do
     -v|--version)   VERSION="${2:?--version 需要一个值}"; shift 2 ;;
     -v=*|--version=*) VERSION="${1#*=}"; shift ;;
     -e|--build-exe) BUILD_EXE=1; shift ;;
+    --no-exe)       BUILD_EXE=0; shift ;;
+    --with-source)  WITH_SOURCE=1; DO_ZIP=1; shift ;;
     --no-zip)       DO_ZIP=0; shift ;;
     --no-readme)    DO_README=0; shift ;;
     --no-deps)      DO_DEPS=0; shift ;;
@@ -206,12 +210,12 @@ copy_tree() {
 # ---------- 3. 打 exe ----------
 build_exe() {
   if [ "$PLATFORM" != "windows" ]; then
-    err "[3/3] --build-exe 仅支持 Windows（当前平台: $PLATFORM）"
-    err "      PyInstaller 不能跨平台交叉编译，请到 Windows 上执行 package.ps1 -BuildExe"
-    exit 1
+    warn "[2/3] 跳过 exe：PyInstaller 不能跨平台交叉编译（当前平台: $PLATFORM）"
+    warn "      本平台只能打源码归档；要 exe 请到 Windows 上执行 package.ps1"
+    return 0
   fi
 
-  step "[3/3] Building standalone exe ..."
+  step "[2/3] Building standalone exe ..."
 
   if [ "$DO_DEPS" -eq 1 ]; then
     if ! "$PY_EXE" -c 'import PyInstaller' 2>/dev/null; then
@@ -258,6 +262,12 @@ build_exe() {
   local exe="$dist/AutoClicker.exe"
   [ -f "$exe" ] || { err "构建结束但未找到 $exe"; exit 1; }
   ok "      AutoClicker.exe  ($(( $(stat -c%s "$exe" 2>/dev/null || echo 0) / 1048576 )) MB)"
+
+  # 主产物就是 dist/AutoClicker.exe 本身。再额外打一个 zip 方便分发，--no-zip 可关掉。
+  if [ "$DO_ZIP" -eq 0 ]; then
+    printf '%s      (跳过 zip 打包，exe 直接在 dist/ 下)%s\n' "$C_DIM" "$C_OFF"
+    return 0
+  fi
 
   # exe + 文档 + 配置说明 打成一个发布包
   local stamp; stamp="$(date +%Y%m%d)"
@@ -376,10 +386,20 @@ show_build_status() {
       is_old_date=1
     fi
 
+    # 源码 zip（AutoClicker_vX_日期.zip，不带 _win64）只在 --with-source 时产出
+    local abase; abase=$(basename "$a")
+    local is_src_zip=0
+    case "$abase" in
+      AutoClicker_v*_win64.zip) is_src_zip=0 ;;
+      AutoClicker_v*_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].zip) is_src_zip=1 ;;
+    esac
+
     if [ "$is_old_date" -eq 1 ]; then
-      printf '  [归档] %s  (%s MB, %s)  历史产物，不参与判定\n' "$(basename "$a")" "$size_mb" "$age_str"
+      printf '  [归档] %s  (%s MB, %s)  历史产物，不参与判定\n' "$abase" "$size_mb" "$age_str"
+    elif [ "$is_src_zip" -eq 1 ] && [ "${WITH_SOURCE:-0}" -eq 0 ]; then
+      printf '  [跳过] %s  (%s MB, %s)  源码 zip，需 --with-source 才会重建\n' "$abase" "$size_mb" "$age_str"
     elif [ "${a%.tar.gz}" != "$a" ]; then
-      printf '  [跳过] %s  (%s MB, %s)  package.sh 的产物\n' "$(basename "$a")" "$size_mb" "$age_str"
+      printf '  [跳过] %s  (%s MB, %s)  package.sh 的产物\n' "$abase" "$size_mb" "$age_str"
     elif [ "$at" -lt "${src_time:-0}" ]; then
       # AutoClicker.exe 是 package.ps1 的产物，非 Windows 上不算它
       if [ "$(basename "$a")" = "AutoClicker.exe" ] && [ "$PLATFORM" != "windows" ]; then
@@ -462,18 +482,30 @@ echo "[INFO] Python  : $PY_EXE  [$PY_KIND]"
 echo ""
 
 [ "$DO_README" -eq 1 ] && gen_readme || warn "[1/3] Skip README generation."
-[ "$DO_ZIP" -eq 1 ]    && pack_source || warn "[2/3] Skip source archive."
+
+# exe 是主产物，先做（非 Windows 平台内部会自动跳过）
 if [ "$BUILD_EXE" -eq 1 ]; then
   build_exe
 else
-  warn "[3/3] Skip exe build (use --build-exe to enable)."
+  warn "[2/3] Skip exe build (--no-exe)."
+fi
+
+# 源码归档只在 --with-source 时打
+if [ "$WITH_SOURCE" -eq 1 ] && [ "$DO_ZIP" -eq 1 ]; then
+  pack_source
+elif [ "$WITH_SOURCE" -eq 1 ]; then
+  warn "[3/3] Skip source archive (--no-zip)."
+else
+  printf '%s[3/3] Skip source archive (用 --with-source 可额外打一份).%s\n' "$C_DIM" "$C_OFF"
 fi
 
 echo ""
 echo "============================================"
 ok " Done!"
 [ "$DO_README" -eq 1 ] && echo "   README : README.md"
-[ "$DO_ZIP" -eq 1 ]    && echo "   Archive: dist/"
-[ "$BUILD_EXE" -eq 1 ] && echo "   Release: dist/AutoClicker.exe"
+if [ "$BUILD_EXE" -eq 1 ] && [ -f "$PROJECT_DIR/dist/AutoClicker.exe" ]; then
+  echo "   EXE    : dist/AutoClicker.exe  ($(( $(stat -c%s "$PROJECT_DIR/dist/AutoClicker.exe" 2>/dev/null || echo 0) / 1048576 )) MB)"
+fi
+[ "$WITH_SOURCE" -eq 1 ] && [ "$DO_ZIP" -eq 1 ] && echo "   Archive: dist/"
 echo "============================================"
 echo ""

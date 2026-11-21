@@ -2,22 +2,31 @@
 #  AutoClicker 打包脚本 (PowerShell)
 #
 #  - 调用 script/gen_readme.py 生成 README.md（行数/目录树/git 版本）
-#  - 打包源码 zip 到 dist/，排除 .venv / __pycache__ / log / dist / build
-#  - 可选 -BuildExe：用 PyInstaller 打单文件 exe
+#  - 用 PyInstaller 打单文件 exe 到 dist/AutoClicker.exe（默认动作）
+#  - 顺带出一个可直接分发的 dist/AutoClicker_v*_win64.zip（内含 exe）
+#
+#  默认就是"编译成 exe"，不需要任何额外开关。
 #
 #  用法:
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1 -CheckOnly
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1 -Version 1.1.0
-#    powershell -ExecutionPolicy Bypass -File script\package.ps1 -BuildExe
+#    powershell -ExecutionPolicy Bypass -File script\package.ps1 -SkipExe
+#    powershell -ExecutionPolicy Bypass -File script\package.ps1 -WithSource
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1 -SkipZip
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1 -SkipReadme
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1 -SkipDeps
+#    powershell -ExecutionPolicy Bypass -File script\package.ps1 -Force
 # ============================================================
 [CmdletBinding()]
 param(
     [string]$Version = "1.0.0",
+    # 默认就打 exe。要跳过用 -SkipExe。
+    [switch]$SkipExe,
+    # 兼容旧用法：写了也等于"打 exe"（现在是默认行为，无需再传）
     [switch]$BuildExe,
+    # 额外再打一个源码 zip（默认不打 —— 发布物是 exe，不是源码包）
+    [switch]$WithSource,
     [switch]$SkipZip,
     [switch]$SkipReadme,
     [switch]$SkipDeps,
@@ -187,7 +196,7 @@ function New-SourcePackage {
 function Build-Exe {
     param([string]$PythonExe, [string]$Ver)
 
-    Write-Step "[3/3] Building standalone exe ..."
+    Write-Step "[2/3] Building standalone exe ..."
 
     # 依赖自检
     # 注意: $ErrorActionPreference = "Stop" 下对原生命令用 2>$null 会抛
@@ -302,7 +311,13 @@ function Build-Exe {
     $sizeMB = [math]::Round((Get-Item $exePath).Length / 1MB, 1)
     Write-Ok "      AutoClicker.exe  ($sizeMB MB)"
 
-    # 把 exe + 文档 + 一份默认配置说明打成一个发布包
+    # 主产物就是 dist/AutoClicker.exe 本身。
+    # 再额外打一个 zip 方便分发（里面装的就是这个 exe），-SkipZip 可关掉。
+    if ($SkipZip) {
+        Write-Host "      (跳过 zip 打包，exe 直接在 dist/ 下)" -ForegroundColor DarkGray
+        return $exePath
+    }
+
     $stamp   = Get-Date -Format 'yyyyMMdd'
     $zipName = "AutoClicker_v${Ver}_${stamp}_win64.zip"
     $zipPath = Join-Path $distDir $zipName
@@ -391,7 +406,7 @@ function Get-SourceStamp {
 }
 
 function Show-BuildStatus {
-    param([string]$Ver)
+    param([string]$Ver, [bool]$ExpectSource = $false)
 
     Write-Host ""
     Write-Host "------------- 打包产物检测 -------------" -ForegroundColor Cyan
@@ -436,6 +451,11 @@ function Show-BuildStatus {
 
         # .tar.gz 归 package.sh 管，不参与本地判定
         $other = $a.Name -like '*.tar.gz'
+
+        # 源码 zip（AutoClicker_vX_日期.zip，不带 _win64）现在只有 -WithSource 才产出。
+        # 没要它就别拿它比时间，否则默认流程永远有一项"过期"。
+        $isSourceZip = ($a.Name -match '^AutoClicker_v[^/]*_\d{8}\.zip$') -and ($a.Name -notlike '*_win64.zip')
+        $skipSource  = $isSourceZip -and (-not $ExpectSource)
         # 日期戳不是今天的产物属于历史归档（同一天多次打包会覆盖同名文件，
         # 换了一天就留成旧文件）。它们不可能是本次打包的预期产物，
         # 拿它们跟今天的源码比 mtime 只会永远报过期，所以只展示不判定。
@@ -445,6 +465,8 @@ function Show-BuildStatus {
 
         if ($isOldDate) {
             Write-Host  ("  [归档] {0}  ({1} MB, {2})  历史产物，不参与判定" -f $a.Name, $sizeMb, $ageStr) -ForegroundColor DarkGray
+        } elseif ($skipSource) {
+            Write-Host  ("  [跳过] {0}  ({1} MB, {2})  源码 zip，需 -WithSource 才会重建" -f $a.Name, $sizeMb, $ageStr) -ForegroundColor DarkGray
         } elseif ($stale -and -not $other) {
             $allFresh = $false
             Write-Warn2 ("  [过期] {0}  ({1} MB, {2})" -f $a.Name, $sizeMb, $ageStr)
@@ -490,13 +512,18 @@ Write-Host "        AutoClicker Package Builder" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "[INFO] Project : $ProjectDir"
 Write-Host "[INFO] Version : $Version"
-Write-Host "[INFO] BuildExe: $BuildExe"
+
+# 默认打 exe；-SkipExe 才跳过。-BuildExe 是旧用法，保留兼容。
+$doExe = (-not $SkipExe)
+Write-Host "[INFO] Target  : 单文件 exe (AutoClicker.exe)"
+if ($SkipExe) { Write-Host "[INFO] -SkipExe 已指定，本次不打 exe" -ForegroundColor DarkGray }
+if ($WithSource) { Write-Host "[INFO] -WithSource 已指定，额外打源码 zip" -ForegroundColor DarkGray }
 Write-Host ""
 
 $results = @{ Readme = $null; Zip = $null; Exe = $null }
 
 # 每次运行都先报一下 dist/ 里的产物是不是最新的
-$fresh = Show-BuildStatus -Ver $Version
+$fresh = Show-BuildStatus -Ver $Version -ExpectSource ([bool]$WithSource)
 Write-Host ""
 
 if ($CheckOnly) {
@@ -541,24 +568,37 @@ try {
         Write-Warn2 "[1/3] Skip README generation."
     }
 
-    if (-not $SkipZip) {
-        $results.Zip = New-SourcePackage -Ver $Version
-    } else {
-        Write-Warn2 "[2/3] Skip source zip."
-    }
-
-    if ($BuildExe) {
+    # exe 是主产物，先做
+    if ($doExe) {
         $results.Exe = Build-Exe -PythonExe $py.Exe -Ver $Version
     } else {
-        Write-Warn2 "[3/3] Skip exe build (use -BuildExe to enable)."
+        Write-Warn2 "[2/3] Skip exe build (-SkipExe)."
+    }
+
+    # 源码 zip 只在显式 -WithSource 时打
+    if ($WithSource -and -not $SkipZip) {
+        $results.Zip = New-SourcePackage -Ver $Version
+    } elseif ($WithSource) {
+        Write-Warn2 "[3/3] Skip source zip (-SkipZip)."
+    } else {
+        Write-Host "[3/3] Skip source zip (用 -WithSource 可额外打一份)." -ForegroundColor DarkGray
     }
 
     Write-Host ""
     Write-Host "============================================" -ForegroundColor Cyan
     Write-Ok " Done!"
     if ($results.Readme) { Write-Host "   README : README.md" }
+    if ($results.Exe) {
+        $exeFile = Join-Path $ProjectDir 'dist\AutoClicker.exe'
+        if (Test-Path -LiteralPath $exeFile) {
+            $mb = [math]::Round((Get-Item $exeFile).Length / 1MB, 1)
+            Write-Host "   EXE    : dist\AutoClicker.exe  ($mb MB)"
+        }
+        if ($results.Exe -ne $exeFile) {
+            Write-Host "   Release: dist\$((Split-Path -Leaf $results.Exe))"
+        }
+    }
     if ($results.Zip)    { Write-Host "   Source : dist\$((Split-Path -Leaf $results.Zip))" }
-    if ($results.Exe)    { Write-Host "   Release: dist\$((Split-Path -Leaf $results.Exe))" }
     Write-Host "============================================" -ForegroundColor Cyan
     Write-Host ""
 } catch {

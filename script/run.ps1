@@ -1,4 +1,4 @@
-﻿﻿# AutoClicker launcher (source run, auto-generated)
+﻿# AutoClicker launcher (source run, auto-generated)
 # Data dir (config/ + log/) is dist/, shared with the exe build.
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir = Split-Path -Parent $ScriptDir

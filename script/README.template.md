@@ -148,40 +148,50 @@ Linux / macOS：
 
 ### 打包发布
 
-三个脚本功能等价，**同一套逻辑、同一份输出**，按你手边的 shell 任选其一：
+**打包的产物是可执行文件 `dist/AutoClicker.exe`**，不是源码压缩包。默认就跑完整流程，
+不需要额外开关。三个脚本按你手边的 shell 任选其一：
 
-| 脚本 | 运行环境 | 打包产物 |
-|------|----------|----------|
-| `script/package.ps1` | Windows PowerShell 5.1+ / PowerShell 7 | `dist/AutoClicker_v{版本}_{日期}.zip`（可选 `-BuildExe` 出 exe） |
+| 脚本 | 运行环境 | 主产物 |
+|------|----------|--------|
+| `script/package.ps1` | Windows PowerShell 5.1+ / PowerShell 7 | `dist/AutoClicker.exe`（单文件，33 MB 左右）+ `dist/AutoClicker_v{版本}_{日期}_win64.zip` |
 | `script/package.cmd` | Windows 命令提示符（cmd.exe） | 同上（内部转调 PowerShell） |
-| `script/package.sh` | Linux / macOS / Git Bash / MSYS2 | `dist/AutoClicker_v{版本}_{日期}.tar.gz`，系统有 `zip` 时同时出 `.zip` |
+| `script/package.sh` | Linux / macOS / Git Bash / MSYS2 | Windows 上同上；非 Windows 上只能打源码归档（PyInstaller 不能交叉编译） |
 
 三个脚本在打包前都会先检测 `dist/` 里的产物是否最新（见下面的「打包结果自检」）。
 
 ```powershell
-# PowerShell（推荐，支持打 exe）
-powershell -ExecutionPolicy Bypass -File script\package.ps1 -Version 1.0.0
-powershell -ExecutionPolicy Bypass -File script\package.ps1 -Version 1.0.0 -BuildExe
+# PowerShell（Windows 主用）
+powershell -ExecutionPolicy Bypass -File script\package.ps1
 ```
 
 ```bat
-:: cmd
-script\package.cmd -Version 1.0.0
-script\package.cmd -Version 1.0.0 -BuildExe
+:: cmd，参数与 ps1 完全一致
+script\package.cmd
 ```
 
 ```bash
 # bash / Git Bash / MSYS2  （Windows 上请用 Git Bash，不要用 WSL 的 bash）
-./script/package.sh --version 1.0.0
-./script/package.sh --version 1.0.0 --build-exe     # 仅 Windows
-./script/package.sh --version 1.0.0 --no-zip        # 只更新文档
+./script/package.sh
 ```
 
-三个脚本都做这三件事：
+主流程三件事：
 
 1. 调用 `script/gen_readme.py` —— 扫描源码统计行数、生成目录树、读取 git 版本，**重新生成 `README.md`**（模板在 `script/README.template.md`，改文档请改模板，不要直接改 README）
-2. 打包源码为 `dist/` 下的归档，自动排除 `.venv` / `__pycache__` / `log` / `dist` / `build`，并剔除 `config/config.json`（含本机窗口标题与句柄，首次运行会自动重建）
-3. 加 `--build-exe` / `-BuildExe` 时，用 PyInstaller 打单文件 exe
+2. **用 PyInstaller 打单文件 exe** 到 `dist/AutoClicker.exe`，再打成可分发 zip
+3. 若额外传 `--with-source` / `-WithSource`，再打一份源码归档（排除 `.venv` / `__pycache__` / `log` / `dist` / `build`，并剔除 `config/config.json` —— 含本机窗口标题与句柄，首次运行会自动重建）
+
+常用开关：
+
+| PowerShell | bash | 作用 |
+|---|---|---|
+| `-Version 1.1.0` | `--version 1.1.0` | 指定版本号 |
+| `-SkipExe` | `--no-exe` | 跳过打 exe |
+| `-WithSource` | `--with-source` | 额外打一份源码归档 |
+| `-SkipZip` | `--no-zip` | 只出 `dist/AutoClicker.exe`，不打 zip |
+| `-SkipReadme` | `--no-readme` | 不重新生成 README |
+| `-SkipDeps` | `--no-deps` | 不自动装 PyInstaller |
+| `-CheckOnly` | `--check-only` | 只检测产物是否最新 |
+| `-Force` | `--force` | 跳过交互确认，强制重打 |
 
 #### 打包结果自检
 
@@ -206,6 +216,7 @@ script\package.cmd -Version 1.0.0 -BuildExe
 - `dist/` 里每个产物与这个时间比对：更早的标 `[过期]`，更晚的标 `[最新]`
 - **文件名日期戳不是今天的标 `[归档]`，不参与判定**。同一天重复打包会覆盖同名文件，换了一天旧文件就留在 `dist/` 里；它们不可能是本次打包的预期产物，拿它们比时间只会永远报过期。
 - `.tar.gz` 只由 `package.sh` 产出，在 ps1 里只显示 `[跳过]`，不参与判定（反之 `.exe` 在非 Windows 平台也不参与）
+- 源码 zip（`AutoClicker_v{版本}_{日期}.zip`，不带 `_win64`）现在只在显式 `-WithSource` / `--with-source` 时产出，默认流程里显示 `[跳过]`，不参与判定
 - `dist/` 里一个今天的产物都没有（只剩归档），也判定为需要打包
 - 有任何一个**今天的**产物过期，结论就是「建议重新打包」
 
