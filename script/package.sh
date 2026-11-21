@@ -258,6 +258,40 @@ build_exe() {
 
   local icon="$PROJECT_DIR/utils/static/Ralsei.ico"
 
+  # 版本信息：PyInstaller 要的是 Python 字面量，不是 .rc。
+  # 不给的话 exe 右键属性 → 详细信息 是空的，看着像没编完整。
+  local verfile="$build/version_info_$mode.txt"
+  local v1=0 v2=0 v3=0 rest
+  rest="$VERSION"
+  v1="$(printf '%s' "$rest" | cut -d. -f1)"; v2="$(printf '%s' "$rest" | cut -d. -f2)"; v3="$(printf '%s' "$rest" | cut -d. -f3)"
+  case "$v1" in ''|*[!0-9]*) v1=1 ;; esac
+  case "$v2" in ''|*[!0-9]*) v2=0 ;; esac
+  case "$v3" in ''|*[!0-9]*) v3=0 ;; esac
+  cat > "$verfile" <<VEREOF
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=($v1, $v2, $v3, 0),
+    prodvers=($v1, $v2, $v3, 0),
+    mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        u'080404B0',
+        [StringStruct(u'CompanyName', u'YOUXICHUNMI'),
+         StringStruct(u'FileDescription', u'AutoClicker - 自动连点器'),
+         StringStruct(u'FileVersion', u'$VERSION'),
+         StringStruct(u'InternalName', u'AutoClicker'),
+         StringStruct(u'LegalCopyright', u'MIT License'),
+         StringStruct(u'OriginalFilename', u'AutoClicker.exe'),
+         StringStruct(u'ProductName', u'AutoClicker'),
+         StringStruct(u'ProductVersion', u'$VERSION')])
+    ]),
+    VarFileInfo([VarStruct(u'Translation', [2052, 1200])])
+  ]
+)
+VEREOF
+
   local pyargs=(
     -m PyInstaller
     --noconfirm --clean "--$mode" --windowed
@@ -267,6 +301,10 @@ build_exe() {
     --specpath "$specdir"
     --add-data "$add_data"
   )
+  # 版本资源是 PE 专有的，非 Windows 传了反而可能让 PyInstaller 报错
+  case "$PLATFORM" in
+    windows) pyargs+=(--version-file "$verfile") ;;
+  esac
   [ -f "$icon" ] && pyargs+=(--icon "$icon")
   local m
   for m in PyQt6.QtWebEngineCore PyQt6.QtWebEngineWidgets PyQt6.QtMultimedia \

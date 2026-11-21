@@ -257,6 +257,48 @@ function Build-Exe {
     # 里面是 exe + 一堆依赖，不适合直接放 dist/，压完 zip 再说）
     $outDir = if ($Mode -eq 'onefile') { $distDir } else { Join-Path $buildDir 'green' }
 
+    # ---- 版本信息（资源管理器「属性 → 详细信息」里看到的内容）
+    # 不给这个文件，exe 的版本页是空的，右键属性一片空白，看着像没编译完整。
+    # PyInstaller 要的不是 .rc，而是一个「Python 字面量」格式的文本。
+    $verFile = Join-Path $buildDir "version_info_$Mode.txt"
+    $verParts = @(1, 0, 0, 0)
+    $verNums = $Ver -split '\.'
+    for ($i = 0; $i -lt [Math]::Min(3, $verNums.Count); $i++) {
+        $parsed = 0
+        if ([int]::TryParse($verNums[$i], [ref]$parsed)) { $verParts[$i] = $parsed }
+    }
+    $verTuple = '(' + ($verParts -join ', ') + ')'
+    $verText = @"
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=$verTuple,
+    prodvers=$verTuple,
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        u'080404B0',
+        [StringStruct(u'CompanyName', u'YOUXICHUNMI'),
+         StringStruct(u'FileDescription', u'AutoClicker - 自动连点器'),
+         StringStruct(u'FileVersion', u'$Ver'),
+         StringStruct(u'InternalName', u'AutoClicker'),
+         StringStruct(u'LegalCopyright', u'MIT License'),
+         StringStruct(u'OriginalFilename', u'AutoClicker.exe'),
+         StringStruct(u'ProductName', u'AutoClicker'),
+         StringStruct(u'ProductVersion', u'$Ver')])
+    ]),
+    VarFileInfo([VarStruct(u'Translation', [2052, 1200])])
+  ]
+)
+"@
+    [System.IO.File]::WriteAllText($verFile, $verText, (New-Object System.Text.UTF8Encoding($false)))
+
     $pyArgs = @(
         '-m', 'PyInstaller',
         '--noconfirm',
@@ -264,6 +306,7 @@ function Build-Exe {
         "--$Mode",
         '--windowed',
         '--name', 'AutoClicker',
+        '--version-file', $verFile,
         '--distpath', $outDir,
         '--workpath', $workDir,
         '--specpath', $specDir,

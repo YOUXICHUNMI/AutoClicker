@@ -279,6 +279,24 @@ powershell -ExecutionPolicy Bypass -File script\package.ps1 -SkipSingle
 - 全局热键仍需管理员权限：右键 exe →「以管理员身份运行」
 - **onefile 对临时目录有要求**：它要在 `%TEMP%` 下建目录解压。如果 `%TEMP%` 因为权限、完整性级别（Low Integrity）、杀软或磁盘策略而不可写，会弹出 `Could not create temporary directory!` 的错误框 —— 此时换 `TMP`/`TEMP` 环境变量指向可写目录，或改用绿色目录版即可。绿色目录版不做解压，没有这个约束。
 
+#### exe 的图标与版本信息
+
+两种形态的 exe 都带 **Ralsei 图标**和完整的版本信息，右键「属性 → 详细信息」能看到：
+
+| 字段 | 值 |
+|------|-----|
+| 文件说明 | `AutoClicker - 自动连点器` |
+| 产品名称 | `AutoClicker` |
+| 文件版本 / 产品版本 | 跟 `-Version` 参数一致（默认 `1.0.0`） |
+| 公司名称 | `YOUXICHUNMI` |
+| 版权 | `MIT License` |
+
+图标来自 `utils/static/Ralsei.ico`（16/24/32/48/64/128/256 七种尺寸），通过 PyInstaller 的 `--icon` 传进去。
+
+版本信息由 `build/version_info_<mode>.txt` 提供 —— 那是 PyInstaller 要的 **Python 字面量格式**，不是 `.rc`，每次打包按 `-Version` 现生成。它和 `--icon` 是两回事：前者写 PE 的版本资源段，后者写图标资源段，缺哪个就在属性页/资源管理器里少一块。
+
+> 如果 exe 在资源管理器里显示成默认的白色窗口图标，先确认打包时 `utils/static/Ralsei.ico` 存在（脚本会检查，缺了会跳过 `--icon` 而不报错），再清掉 `build/` 重新打包 —— PyInstaller 的 `--clean` 不覆盖已缓存的图标资源。
+
 ### 用 GitHub Actions 自动打包
 
 仓库里带了一份 `.github/workflows/build.yml`，推到 GitHub 就会自动编译并打包出 **Windows 和 Linux** 两套产物，不用在自己机器上装任何东西。
@@ -772,7 +790,7 @@ script\install.bat
 - ctypes 结构体字段名保持与 MSDN 一致，方便对照文档
 - 任何跨线程的 UI 更新必须经过信号或 `QTimer.singleShot`
 
-> 最近提交：`dd8def4 (2026-11-21) feat: 打包默认产出 exe，源码 zip 改为可选`
+> 最近提交：`a3942a3 (2026-11-21) feat: 打包脚本同时产出单文件与绿色目录两种形态，新增 GitHub Actions 自动打包`
 
 ---
 
