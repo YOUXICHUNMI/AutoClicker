@@ -148,12 +148,21 @@ Linux / macOS：
 
 ### 打包发布
 
-**打包的产物是可执行文件 `dist/AutoClicker.exe`**，不是源码压缩包。默认就跑完整流程，
-不需要额外开关。三个脚本按你手边的 shell 任选其一：
+**打包的产物是可执行文件，不是源码压缩包**。默认一次跑完，**两种形态都产**，不需要额外开关：
 
-| 脚本 | 运行环境 | 主产物 |
-|------|----------|--------|
-| `script/package.ps1` | Windows PowerShell 5.1+ / PowerShell 7 | `dist/AutoClicker.exe`（单文件，33 MB 左右）+ `dist/AutoClicker_v{版本}_{日期}_win64.zip` |
+| 产物 | 说明 |
+|------|------|
+| `dist/AutoClicker.exe` | 单文件 exe（onefile，约 33.7 MB），拷一个文件就能跑 |
+| `dist/AutoClicker_v{版本}_{日期}_single_win64.exe` | 上面那份的带版本号副本，便于归档与分发 |
+| `dist/AutoClicker_v{版本}_{日期}_win64.zip` | 绿色目录包（onedir，33.7 MB），解压后是 `AutoClicker.exe` + `_internal/` 依赖目录，启动快、便于排障 |
+
+**单文件适合发给别人**（对方什么都不用装）；**绿色目录适合自己留着排障**（依赖都在 `_internal/` 里一眼可见，启动也更快）。
+
+三个脚本按你手边的 shell 任选其一：
+
+| 脚本 | 运行环境 | 产物 |
+|------|----------|------|
+| `script/package.ps1` | Windows PowerShell 5.1+ / PowerShell 7 | 上面三份全产 |
 | `script/package.cmd` | Windows 命令提示符（cmd.exe） | 同上（内部转调 PowerShell） |
 | `script/package.sh` | Linux / macOS / Git Bash / MSYS2 | Windows 上同上；非 Windows 上只能打源码归档（PyInstaller 不能交叉编译） |
 
@@ -174,20 +183,23 @@ script\package.cmd
 ./script/package.sh
 ```
 
-主流程三件事：
+主流程四件事：
 
 1. 调用 `script/gen_readme.py` —— 扫描源码统计行数、生成目录树、读取 git 版本，**重新生成 `README.md`**（模板在 `script/README.template.md`，改文档请改模板，不要直接改 README）
-2. **用 PyInstaller 打单文件 exe** 到 `dist/AutoClicker.exe`，再打成可分发 zip
-3. 若额外传 `--with-source` / `-WithSource`，再打一份源码归档（排除 `.venv` / `__pycache__` / `log` / `dist` / `build`，并剔除 `config/config.json` —— 含本机窗口标题与句柄，首次运行会自动重建）
+2. **用 PyInstaller 打单文件 exe**（`--onefile`）到 `dist/AutoClicker.exe`，并复制一份带版本号的副本
+3. **用 PyInstaller 打绿色目录**（`--onedir`）到临时目录，再压成 `dist/AutoClicker_v{版本}_{日期}_win64.zip`
+4. 若额外传 `--with-source` / `-WithSource`，再打一份源码归档（排除 `.venv` / `__pycache__` / `log` / `dist` / `build`，并剔除 `config/config.json` —— 含本机窗口标题与句柄，首次运行会自动重建）
 
 常用开关：
 
 | PowerShell | bash | 作用 |
 |---|---|---|
 | `-Version 1.1.0` | `--version 1.1.0` | 指定版本号 |
-| `-SkipExe` | `--no-exe` | 跳过打 exe |
+| `-SkipSingle` | `--skip-single` | 只打绿色目录 zip，不打单文件 exe |
+| `-SkipGreen` | `--skip-green` | 只打单文件 exe，不打绿色目录 zip |
+| `-SkipExe` | `--no-exe` | 两种都不打（只跑 README 与可选源码归档） |
 | `-WithSource` | `--with-source` | 额外打一份源码归档 |
-| `-SkipZip` | `--no-zip` | 只出 `dist/AutoClicker.exe`，不打 zip |
+| `-SkipZip` | `--no-zip` | 单文件 exe 不再压进发布 zip |
 | `-SkipReadme` | `--no-readme` | 不重新生成 README |
 | `-SkipDeps` | `--no-deps` | 不自动装 PyInstaller |
 | `-CheckOnly` | `--check-only` | 只检测产物是否最新 |
@@ -199,13 +211,11 @@ script\package.cmd
 
 ```
 ------------- 打包产物检测 -------------
-  源码最新改动: 2026-11-21 13:50:25  (README.md)
-  [最新] AutoClicker_v1.0.0_20261121_win64.zip  (33.39 MB, 1 分钟前)
+  源码最新改动: 2026-11-21 19:20:25  (README.md)
   [最新] AutoClicker.exe  (33.68 MB, 1 分钟前)
-  [最新] AutoClicker_v1.0.0_20261121.zip  (0.11 MB, 1 分钟前)
-  [跳过] AutoClicker_v1.0.0_20261121.tar.gz  (0.09 MB, 52 分钟前)  package.sh 的产物
+  [最新] AutoClicker_v1.0.0_20261121_single_win64.exe  (33.68 MB, 1 分钟前)
+  [最新] AutoClicker_v1.0.0_20261121_win64.zip  (33.72 MB, 1 分钟前)
   [归档] AutoClicker_v1.0.0_20261120_win64.zip  (33.38 MB, 16 小时前)  历史产物，不参与判定
-  [归档] AutoClicker_v1.0.0_20261120.zip  (0.1 MB, 16 小时前)  历史产物，不参与判定
 ----------------------------------------
   结论: 产物已是最新，无需重新打包。
 ```
@@ -217,6 +227,7 @@ script\package.cmd
 - **文件名日期戳不是今天的标 `[归档]`，不参与判定**。同一天重复打包会覆盖同名文件，换了一天旧文件就留在 `dist/` 里；它们不可能是本次打包的预期产物，拿它们比时间只会永远报过期。
 - `.tar.gz` 只由 `package.sh` 产出，在 ps1 里只显示 `[跳过]`，不参与判定（反之 `.exe` 在非 Windows 平台也不参与）
 - 源码 zip（`AutoClicker_v{版本}_{日期}.zip`，不带 `_win64`）现在只在显式 `-WithSource` / `--with-source` 时产出，默认流程里显示 `[跳过]`，不参与判定
+- **形态齐全检查**：默认要产两种形态，所以今天缺 `*_win64.zip`（绿色目录）或缺 `*_single_win64.exe`（单文件带版本号副本）都判定为需要打包
 - `dist/` 里一个今天的产物都没有（只剩归档），也判定为需要打包
 - 有任何一个**今天的**产物过期，结论就是「建议重新打包」
 
@@ -244,17 +255,57 @@ powershell -ExecutionPolicy Bypass -File script\package.ps1 -CheckOnly
 #### 打 exe 说明
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File script\package.ps1 -BuildExe
+# 默认就打，两种形态都产
+powershell -ExecutionPolicy Bypass -File script\package.ps1
+
+# 只想要单文件
+powershell -ExecutionPolicy Bypass -File script\package.ps1 -SkipGreen
+
+# 只想要绿色目录
+powershell -ExecutionPolicy Bypass -File script\package.ps1 -SkipSingle
 ```
 
-产物：`dist/AutoClicker.exe`（单文件，实测约 33.7 MB）+ `dist/AutoClicker_v{版本}_{日期}_win64.zip`（内含 exe、README、`config/说明.txt`）
+产物：
 
-exe 是 **onefile** 模式，启动时会把自己解压到 `%TEMP%\_MEIxxxxxx\` 再运行。因此：
+- `dist/AutoClicker.exe` —— 单文件，实测约 33.7 MB
+- `dist/AutoClicker_v{版本}_{日期}_single_win64.exe` —— 同上，带版本号，便于归档
+- `dist/AutoClicker_v{版本}_{日期}_win64.zip` —— 绿色目录，解压后是 `AutoClicker.exe` + `_internal/`，附 `README.md`、`LICENSE`、`config/说明.txt`
+
+单文件是 **onefile** 模式，启动时会把自己解压到 `%TEMP%\_MEIxxxxxx\` 再运行。因此：
 
 - `config/` 和 `log/` 落在 **exe 所在目录**（不是临时目录），配置和日志不会丢 —— 这由 `utils/app_paths.py` 的 `app_root()` 保证
 - 图标、GIF 等只读资源打进包里，由 `resource_path()` 从 `sys._MEIPASS` 读取
 - 首次运行 exe 时若同目录没有 `config/config.json`，会以默认值自动创建
 - 全局热键仍需管理员权限：右键 exe →「以管理员身份运行」
+- **onefile 对临时目录有要求**：它要在 `%TEMP%` 下建目录解压。如果 `%TEMP%` 因为权限、完整性级别（Low Integrity）、杀软或磁盘策略而不可写，会弹出 `Could not create temporary directory!` 的错误框 —— 此时换 `TMP`/`TEMP` 环境变量指向可写目录，或改用绿色目录版即可。绿色目录版不做解压，没有这个约束。
+
+### 用 GitHub Actions 自动打包
+
+仓库里带了一份 `.github/workflows/build.yml`，推到 GitHub 就会自动编译并打包出 **Windows 和 Linux** 两套产物，不用在自己机器上装任何东西。
+
+触发方式：
+
+| 事件 | 行为 |
+|------|------|
+| push 到 `main` | 编译 + 打包，产物作为 workflow artifact 保留 30 天 |
+| `pull_request` | 同上（只构建，不发版） |
+| push 形如 `v1.2.0` 的 tag | 额外自动建 GitHub Release，把两平台产物挂上去 |
+| 手动 `workflow_dispatch` | 在 Actions 页面点「Run workflow」 |
+
+两个 job：
+
+- **windows** —— 装 Python 3.12 + 依赖 + PyInstaller，然后**直接调用仓库自己的 `script/package.ps1 -Force -SkipReadme`**，所以 CI 产出的东西和你本机跑出来的完全一致；上传 `dist/*.exe` 与 `dist/*.zip`
+- **linux** —— 先 `apt-get` 装 PyQt6 在无显示环境必需的系统库（`libgl1`、`libegl1`、`libxkbcommon-x11-0`、`libxcb-*` 一族），再跑两次 PyInstaller（onefile + onedir），产出 `AutoClicker_v{版本}_{日期}_single_linux64` 与 `AutoClicker_v{版本}_{日期}_linux64.tar.gz`
+
+> Linux 那边 PyInstaller 不能交叉编译出 Windows 产物，反之亦然 —— 所以两个 job 各在各自的原生 runner 上跑。
+
+本地等价命令（想手动模拟 CI 的处理）：
+
+```bash
+# Linux
+python -m PyInstaller --noconfirm --clean --onefile --name AutoClicker \
+  --add-data "$PWD/utils/static:utils/static" main.py
+```
 
 ### 数据目录：源码运行与 exe 运行共用 `dist/`
 
@@ -282,6 +333,9 @@ exe 是 **onefile** 模式，启动时会把自己解压到 `%TEMP%\_MEIxxxxxx\`
 
 ```
 AutoClicker/
+├── .github/
+│   └── workflows/
+│       └── build.yml
 ├── core/
 │   ├── __init__.py
 │   ├── click_engine.py
@@ -718,7 +772,7 @@ script\install.bat
 - ctypes 结构体字段名保持与 MSDN 一致，方便对照文档
 - 任何跨线程的 UI 更新必须经过信号或 `QTimer.singleShot`
 
-> 最近提交：`6e9c9ca (2026-11-21) fix: 打包自检把历史归档误判为过期`
+> 最近提交：`dd8def4 (2026-11-21) feat: 打包默认产出 exe，源码 zip 改为可选`
 
 ---
 

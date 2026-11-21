@@ -4,13 +4,17 @@ rem  AutoClicker 打包脚本 (cmd)
 rem
 rem  这是 script\package.ps1 的薄包装：负责找到 PowerShell 并转调，
 rem  真正的逻辑只有一份，避免 cmd 里重复实现模板替换与压缩。
-rem  默认产出 dist\AutoClicker.exe（单文件 exe），无需额外开关。
+rem  默认两种形态都产（无需额外开关）：
+rem    dist\AutoClicker.exe                            单文件 exe
+rem    dist\AutoClicker_v<版本>_<日期>_single_win64.exe  同一文件的带版本号副本
+rem    dist\AutoClicker_v<版本>_<日期>_win64.zip         绿色目录 zip
 rem
 rem  用法:
 rem    script\package.cmd
 rem    script\package.cmd -Version 1.1.0
-rem    script\package.cmd -Version 1.1.0
-rem    script\package.cmd -SkipExe
+rem    script\package.cmd -SkipSingle      (只打绿色目录 zip)
+rem    script\package.cmd -SkipGreen       (只打单文件 exe)
+rem    script\package.cmd -SkipExe         (两种都不打)
 rem    script\package.cmd -WithSource
 rem    script\package.cmd -CheckOnly
 rem    script\package.cmd -SkipZip

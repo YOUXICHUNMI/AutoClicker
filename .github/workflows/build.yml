@@ -1,0 +1,160 @@
+name: Build
+
+# 触发方式：
+#   - 推送到 main
+#   - 打 v* 标签（会额外发 Release）
+#   - 手动触发
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # 打 tag 时需要创建 Release
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  # ==========================================================
+  #  Windows：单文件 exe + 绿色目录 zip（两种形态都产）
+  # ==========================================================
+  windows:
+    name: Windows (exe + green dir)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # gen_readme.py 要读 git 提交信息
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      # 走项目自己的打包脚本，保证 CI 与本地产出一致
+      # -Force 跳过「产物已最新」的询问；-SkipReadme 避免 CI 里的README 与仓库版本打架
+      - name: Package (exe + green dir)
+        shell: pwsh
+        run: ./script/package.ps1 -Force -SkipReadme
+
+      - name: Show dist
+        shell: pwsh
+        run: Get-ChildItem dist -File | Format-Table Name, Length
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoClicker-windows
+          path: |
+            dist/*.exe
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  # ==========================================================
+  #  Linux：PyInstaller 原生打 Linux 版（行为与 Windows 相同，
+  #  只是 Win32 那部分功能被 platform guard 关掉，界面可读可用）
+  # ==========================================================
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          # PyQt6 运行时依赖（无 GUI 显示器的 runner 上也必须装齐）
+          sudo apt-get install -y \
+            libgl1 libegl1 libxkbcommon-x11-0 libdbus-1-3 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-cursor0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Build (onefile)
+        run: |
+          pyinstaller --noconfirm --clean --onefile --name AutoClicker \
+            --add-data "$PWD/utils/static:utils/static" \
+            main.py
+
+      - name: Build (onedir)
+        run: |
+          pyinstaller --noconfirm --clean --onedir --name AutoClicker \
+            --add-data "$PWD/utils/static:utils/static" \
+            --distpath dist-green \
+            main.py
+
+      - name: Package archives
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          [ -z "$VER" ] && VER="0.0.0"
+          [[ "$VER" =~ ^[0-9] ]] || VER="0.0.0"
+          STAMP="$(date +%Y%m%d)"
+          mkdir -p dist
+          # 单文件（Linux 下是可执行文件，不是 exe）
+          cp dist/AutoClicker "dist/AutoClicker_v${VER}_${STAMP}_single_linux64"
+          # 绿色目录
+          tar -czf "dist/AutoClicker_v${VER}_${STAMP}_linux64.tar.gz" \
+            -C dist-green AutoClicker
+          ls -lh dist
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoClicker-linux
+          path: |
+            dist/AutoClicker_v*_single_linux64
+            dist/AutoClicker_v*_linux64.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  # ==========================================================
+  #  打 tag 时把两侧产物发到 Release
+  # ==========================================================
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [ windows, linux ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten
+        run: |
+          mkdir -p out
+          find artifacts -type f -exec cp -n {} out/ \;
+          ls -lh out
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true

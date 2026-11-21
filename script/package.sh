@@ -3,7 +3,10 @@
 #  AutoClicker 打包脚本 (bash)
 #
 #  - 调用 script/gen_readme.py 生成 README.md（行数/目录树/git 版本）
-#  - Windows 上（Git Bash / MSYS2）：用 PyInstaller 打单文件 exe（默认动作）
+#  - Windows 上（Git Bash / MSYS2）：用 PyInstaller 打两种形态（默认都打）
+#      dist/AutoClicker.exe                                单文件 exe（--onefile）
+#      dist/AutoClicker_v<版本>_<日期>_single_win64.exe    同一文件的带版本号副本
+#      dist/AutoClicker_v<版本>_<日期>_win64.zip           绿色目录 zip（--onedir）
 #  - 非 Windows：只能打源码归档（PyInstaller 不能跨平台交叉编译）
 #
 #  用法:
@@ -11,7 +14,9 @@
 #    ./script/package.sh --check-only     # 只检测 dist/ 产物是否最新，不打
 #    ./script/package.sh --force          # 产物已最新也强制重新打包
 #    ./script/package.sh --version 1.1.0
-#    ./script/package.sh --no-exe         # 跳过 exe，只做别的
+#    ./script/package.sh --skip-single    # 只打绿色目录 zip
+#    ./script/package.sh --skip-green     # 只打单文件 exe
+#    ./script/package.sh --no-exe         # 两种都不打，只做别的
 #    ./script/package.sh --with-source    # Windows 上额外再打一份源码归档
 #    ./script/package.sh --no-zip
 #    ./script/package.sh --no-readme
@@ -30,7 +35,9 @@ cd "$PROJECT_DIR"
 
 # ---------- 默认参数 ----------
 VERSION="1.0.0"
-BUILD_EXE=1      # 默认打 exe（非 Windows 平台会自动跳过）
+BUILD_EXE=1      # 默认打程序（非 Windows 平台会自动跳过）
+SKIP_SINGLE=0    # --skip-single：只打绿色目录
+SKIP_GREEN=0     # --skip-green：只打单文件 exe
 DO_ZIP=0        # 源码归档只在 --with-source 时打
 DO_README=1
 DO_DEPS=1
@@ -73,6 +80,8 @@ while [ $# -gt 0 ]; do
     -v=*|--version=*) VERSION="${1#*=}"; shift ;;
     -e|--build-exe) BUILD_EXE=1; shift ;;
     --no-exe)       BUILD_EXE=0; shift ;;
+    --skip-single)  SKIP_SINGLE=1; shift ;;
+    --skip-green)   SKIP_GREEN=1; shift ;;
     --with-source)  WITH_SOURCE=1; DO_ZIP=1; shift ;;
     --no-zip)       DO_ZIP=0; shift ;;
     --no-readme)    DO_README=0; shift ;;
@@ -125,7 +134,7 @@ find_python() {
 
 # ---------- 1. 生成 README ----------
 gen_readme() {
-  step "[1/3] Generating README.md ..."
+  step "[1/4] Generating README.md ..."
   local gen="$SCRIPT_DIR/gen_readme.py"
   [ -f "$gen" ] || { err "缺少 README 生成器: $gen"; exit 1; }
   PYTHONIOENCODING=utf-8 "$PY_EXE" "$gen" --version "$VERSION" || {
@@ -208,14 +217,21 @@ copy_tree() {
 }
 
 # ---------- 3. 打 exe ----------
+# $1 = onefile | onedir
+#   onefile → dist/AutoClicker.exe（单文件）+ 带版本号副本
+#   onedir  → build/green/AutoClicker/ 整个文件夹压成 dist/AutoClicker_v*_win64.zip
 build_exe() {
+  local mode="${1:-onefile}"
+  local label
+  [ "$mode" = "onefile" ] && label="单文件 exe" || label="绿色目录"
+
   if [ "$PLATFORM" != "windows" ]; then
-    warn "[2/3] 跳过 exe：PyInstaller 不能跨平台交叉编译（当前平台: $PLATFORM）"
-    warn "      本平台只能打源码归档；要 exe 请到 Windows 上执行 package.ps1"
+    warn "[2/4] 跳过 $label：PyInstaller 不能跨平台交叉编译（当前平台: $PLATFORM）"
+    warn "      本平台只能打源码归档；要程序请到 Windows 上执行 package.ps1"
     return 0
   fi
 
-  step "[2/3] Building standalone exe ..."
+  step "[2/4] Building $label ..."
 
   if [ "$DO_DEPS" -eq 1 ]; then
     if ! "$PY_EXE" -c 'import PyInstaller' 2>/dev/null; then
@@ -227,8 +243,12 @@ build_exe() {
   local dist="$PROJECT_DIR/dist"
   local build="$PROJECT_DIR/build"
   mkdir -p "$dist" "$build"
-  local specdir="$build/pyinstaller"
-  local workdir="$build/pyinstaller-work"
+  # 两种形态用各自的 spec/work 目录，否则第二次跑会复用第一次的中间产物
+  local specdir="$build/pyinstaller-$mode"
+  local workdir="$build/pyinstaller-work-$mode"
+  # --onedir 的产物是文件夹，先吐到 build/green/
+  local outdir="$dist"
+  [ "$mode" = "onedir" ] && outdir="$build/green"
 
   # Windows 路径必须用反斜杠给 PyInstaller 的 --add-data 分隔符
   local add_data="$PROJECT_DIR/utils/static;utils/static"
@@ -240,9 +260,9 @@ build_exe() {
 
   local pyargs=(
     -m PyInstaller
-    --noconfirm --clean --onefile --windowed
+    --noconfirm --clean "--$mode" --windowed
     --name AutoClicker
-    --distpath "$dist"
+    --distpath "$outdir"
     --workpath "$workdir"
     --specpath "$specdir"
     --add-data "$add_data"
@@ -259,21 +279,30 @@ build_exe() {
   printf '%s      pyinstaller %s%s\n' "$C_DIM" "${pyargs[*]}" "$C_OFF"
   "$PY_EXE" "${pyargs[@]}" || { err "PyInstaller 构建失败"; exit 1; }
 
-  local exe="$dist/AutoClicker.exe"
+  local exe
+  if [ "$mode" = "onefile" ]; then
+    exe="$dist/AutoClicker.exe"
+  else
+    exe="$outdir/AutoClicker/AutoClicker.exe"
+  fi
   [ -f "$exe" ] || { err "构建结束但未找到 $exe"; exit 1; }
   ok "      AutoClicker.exe  ($(( $(stat -c%s "$exe" 2>/dev/null || echo 0) / 1048576 )) MB)"
 
-  # 主产物就是 dist/AutoClicker.exe 本身。再额外打一个 zip 方便分发，--no-zip 可关掉。
-  if [ "$DO_ZIP" -eq 0 ]; then
-    printf '%s      (跳过 zip 打包，exe 直接在 dist/ 下)%s\n' "$C_DIM" "$C_OFF"
+  local stamp; stamp="$(date +%Y%m%d)"
+
+  # 单文件形态：再放一份带版本号的副本便于归档，没有 zip 可打。
+  if [ "$mode" = "onefile" ]; then
+    local versioned="$dist/AutoClicker_v${VERSION}_${stamp}_single_win64.exe"
+    cp "$exe" "$versioned"
+    ok "      $(basename "$versioned")"
     return 0
   fi
 
-  # exe + 文档 + 配置说明 打成一个发布包
-  local stamp; stamp="$(date +%Y%m%d)"
+
+  # exe + 依赖 + 文档 + 配置说明 打成一个发布包
   local relbase="AutoClicker_v${VERSION}_${stamp}_win64"
   local tmpdir; tmpdir="$(mktemp -d)"
-  cp "$exe" "$tmpdir/"
+  cp -r "$outdir/AutoClicker/." "$tmpdir/"
   [ -f "$PROJECT_DIR/README.md" ] && cp "$PROJECT_DIR/README.md" "$tmpdir/"
   [ -f "$PROJECT_DIR/LICENSE" ]   && cp "$PROJECT_DIR/LICENSE"   "$tmpdir/"
   mkdir -p "$tmpdir/config"
@@ -348,7 +377,8 @@ show_build_status() {
   local TODAY_STAMP
   TODAY_STAMP=$(date '+%Y%m%d')
   artifacts=$(find "$dist_dir" -maxdepth 1 -type f \
-      \( -name '*.zip' -o -name '*.tar.gz' -o -name 'AutoClicker.exe' \) -print 2>/dev/null)
+      \( -name '*.zip' -o -name '*.tar.gz' -o -name 'AutoClicker.exe' \
+         -o -name '*_single_win64.exe' \) -print 2>/dev/null)
 
   if [ -z "$artifacts" ]; then
     warn "  dist/ 里没有任何产物 —— 需要打包。"
@@ -417,6 +447,22 @@ show_build_status() {
   if [ "$today_count" -eq 0 ]; then
     all_fresh=0
     warn "  dist/ 里没有今天（$TODAY_STAMP）的产物 —— 需要打包。"
+  else
+    # 两种形态都要有：绿色目录 zip 与单文件 exe。缺哪个都算需要重新打包。
+    if [ "$BUILD_EXE" -eq 1 ] && [ "$PLATFORM" = "windows" ]; then
+      if [ "$SKIP_SINGLE" -eq 0 ]; then
+        if ! find "$dist_dir" -maxdepth 1 -type f -name "*_${TODAY_STAMP}_single_win64.exe" | grep -q .; then
+          all_fresh=0
+          warn "  缺少今天的单文件 exe（*_${TODAY_STAMP}_single_win64.exe）—— 需要打包。"
+        fi
+      fi
+      if [ "$SKIP_GREEN" -eq 0 ]; then
+        if ! find "$dist_dir" -maxdepth 1 -type f -name "*_${TODAY_STAMP}_win64.zip" | grep -q .; then
+          all_fresh=0
+          warn "  缺少今天的绿色目录 zip（*_${TODAY_STAMP}_win64.zip）—— 需要打包。"
+        fi
+      fi
+    fi
   fi
 
   echo "----------------------------------------"
@@ -481,30 +527,53 @@ fi
 echo "[INFO] Python  : $PY_EXE  [$PY_KIND]"
 echo ""
 
-[ "$DO_README" -eq 1 ] && gen_readme || warn "[1/3] Skip README generation."
+[ "$DO_README" -eq 1 ] && gen_readme || warn "[1/4] Skip README generation."
 
-# exe 是主产物，先做（非 Windows 平台内部会自动跳过）
+# 两种形态默认都打。只要一种用 --skip-single / --skip-green。
+WANT_SINGLE=$(( BUILD_EXE == 1 && SKIP_SINGLE == 0 ? 1 : 0 ))
+WANT_GREEN=$((  BUILD_EXE == 1 && SKIP_GREEN  == 0 ? 1 : 0 ))
+
 if [ "$BUILD_EXE" -eq 1 ]; then
-  build_exe
+  # dist/ 先清空，免得上一轮的旧产物混进来
+  rm -rf "$PROJECT_DIR/dist"
+  mkdir -p "$PROJECT_DIR/dist"
+
+  if [ "$WANT_SINGLE" -eq 1 ]; then
+    build_exe onefile
+  else
+    warn "[2/4] Skip single exe (--skip-single / --no-exe)."
+  fi
+
+  if [ "$WANT_GREEN" -eq 1 ]; then
+    build_exe onedir
+  else
+    warn "[3/4] Skip green dir zip (--skip-green / --no-exe)."
+  fi
 else
-  warn "[2/3] Skip exe build (--no-exe)."
+  warn "[2/4] [3/4] Skip both forms (--no-exe)."
 fi
 
 # 源码归档只在 --with-source 时打
 if [ "$WITH_SOURCE" -eq 1 ] && [ "$DO_ZIP" -eq 1 ]; then
   pack_source
 elif [ "$WITH_SOURCE" -eq 1 ]; then
-  warn "[3/3] Skip source archive (--no-zip)."
+  warn "[4/4] Skip source archive (--no-zip)."
 else
-  printf '%s[3/3] Skip source archive (用 --with-source 可额外打一份).%s\n' "$C_DIM" "$C_OFF"
+  printf '%s[4/4] Skip source archive (用 --with-source 可额外打一份).%s\n' "$C_DIM" "$C_OFF"
 fi
 
 echo ""
 echo "============================================"
 ok " Done!"
 [ "$DO_README" -eq 1 ] && echo "   README : README.md"
-if [ "$BUILD_EXE" -eq 1 ] && [ -f "$PROJECT_DIR/dist/AutoClicker.exe" ]; then
-  echo "   EXE    : dist/AutoClicker.exe  ($(( $(stat -c%s "$PROJECT_DIR/dist/AutoClicker.exe" 2>/dev/null || echo 0) / 1048576 )) MB)"
+if [ -d "$PROJECT_DIR/dist" ]; then
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    printf '   %-46s %5d MB\n' "$(basename "$f")" \
+      "$(( $(stat -c%s "$f" 2>/dev/null || echo 0) / 1048576 ))"
+  done <<EOF
+$(find "$PROJECT_DIR/dist" -maxdepth 1 -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.gz' \) 2>/dev/null | sort)
+EOF
 fi
 [ "$WITH_SOURCE" -eq 1 ] && [ "$DO_ZIP" -eq 1 ] && echo "   Archive: dist/"
 echo "============================================"

@@ -2,18 +2,22 @@
 #  AutoClicker 打包脚本 (PowerShell)
 #
 #  - 调用 script/gen_readme.py 生成 README.md（行数/目录树/git 版本）
-#  - 用 PyInstaller 打单文件 exe 到 dist/AutoClicker.exe（默认动作）
-#  - 顺带出一个可直接分发的 dist/AutoClicker_v*_win64.zip（内含 exe）
+#  - 用 PyInstaller 打两种形态（默认都打）:
+#      dist/AutoClicker.exe                                单文件 exe（--onefile）
+#      dist/AutoClicker_v<版本>_<日期>_single_win64.exe    同一文件的带版本号副本
+#      dist/AutoClicker_v<版本>_<日期>_win64.zip           绿色目录 zip（--onedir）
+#  - -WithSource 时额外打一份源码 zip
 #
-#  默认就是"编译成 exe"，不需要任何额外开关。
+#  默认就是"编译成程序"，不需要任何额外开关。
 #
 #  用法:
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1 -CheckOnly
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1 -Version 1.1.0
+#    powershell -ExecutionPolicy Bypass -File script\package.ps1 -SkipSingle
+#    powershell -ExecutionPolicy Bypass -File script\package.ps1 -SkipGreen
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1 -SkipExe
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1 -WithSource
-#    powershell -ExecutionPolicy Bypass -File script\package.ps1 -SkipZip
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1 -SkipReadme
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1 -SkipDeps
 #    powershell -ExecutionPolicy Bypass -File script\package.ps1 -Force
@@ -21,8 +25,10 @@
 [CmdletBinding()]
 param(
     [string]$Version = "1.0.0",
-    # 默认就打 exe。要跳过用 -SkipExe。
-    [switch]$SkipExe,
+    # 默认两种形态都打。只要一种时用下面两个开关。
+    [switch]$SkipExe,      # 两种都不打（等价于旧语义）
+    [switch]$SkipSingle,   # 不打单文件 exe，只打绿色目录 zip
+    [switch]$SkipGreen,    # 不打绿色目录 zip，只打单文件 exe
     # 兼容旧用法：写了也等于"打 exe"（现在是默认行为，无需再传）
     [switch]$BuildExe,
     # 额外再打一个源码 zip（默认不打 —— 发布物是 exe，不是源码包）
@@ -194,9 +200,10 @@ function New-SourcePackage {
 #  3. 打 exe (PyInstaller)
 # ============================================================
 function Build-Exe {
-    param([string]$PythonExe, [string]$Ver)
+    param([string]$PythonExe, [string]$Ver, [string]$Mode = 'onefile')
 
-    Write-Step "[2/3] Building standalone exe ..."
+    $modeLabel = if ($Mode -eq 'onefile') { '单文件 exe' } else { '绿色目录' }
+    Write-Step "[2/4] Building $modeLabel ..."
 
     # 依赖自检
     # 注意: $ErrorActionPreference = "Stop" 下对原生命令用 2>$null 会抛
@@ -243,17 +250,21 @@ function Build-Exe {
 
     $icon = Join-Path $ProjectDir 'utils\static\Ralsei.ico'
     $addData = Join-Path $ProjectDir 'utils\static'
-    $specDir = Join-Path $buildDir 'pyinstaller'
-    $workDir = Join-Path $buildDir 'pyinstaller-work'
+    # 两种形态用各自的 spec/work 目录，否则第二次跑会把第一次的中间产物当缓存复用
+    $specDir = Join-Path $buildDir "pyinstaller-$Mode"
+    $workDir = Join-Path $buildDir "pyinstaller-work-$Mode"
+    # --onefile 直接吐到 dist/；--onedir 先吐到 build/green/（那是个文件夹，
+    # 里面是 exe + 一堆依赖，不适合直接放 dist/，压完 zip 再说）
+    $outDir = if ($Mode -eq 'onefile') { $distDir } else { Join-Path $buildDir 'green' }
 
     $pyArgs = @(
         '-m', 'PyInstaller',
         '--noconfirm',
         '--clean',
-        '--onefile',
+        "--$Mode",
         '--windowed',
         '--name', 'AutoClicker',
-        '--distpath', $distDir,
+        '--distpath', $outDir,
         '--workpath', $workDir,
         '--specpath', $specDir,
         # 只读资源：整个 utils/static 打进包，运行时用 resource_path() 取
@@ -304,28 +315,45 @@ function Build-Exe {
         throw "PyInstaller 构建失败 (exit $pyRc)"
     }
 
-    $exePath = Join-Path $distDir 'AutoClicker.exe'
+    # --onedir 的产物是个文件夹：$outDir\AutoClicker\AutoClicker.exe
+    $exePath = if ($Mode -eq 'onefile') {
+        Join-Path $outDir 'AutoClicker.exe'
+    } else {
+        Join-Path (Join-Path $outDir 'AutoClicker') 'AutoClicker.exe'
+    }
     if (-not (Test-Path -LiteralPath $exePath)) {
         throw "构建结束但未找到 $exePath"
     }
     $sizeMB = [math]::Round((Get-Item $exePath).Length / 1MB, 1)
     Write-Ok "      AutoClicker.exe  ($sizeMB MB)"
 
-    # 主产物就是 dist/AutoClicker.exe 本身。
-    # 再额外打一个 zip 方便分发（里面装的就是这个 exe），-SkipZip 可关掉。
-    if ($SkipZip) {
-        Write-Host "      (跳过 zip 打包，exe 直接在 dist/ 下)" -ForegroundColor DarkGray
+    if ($Mode -eq 'onefile') {
+        # 单文件形态：dist/AutoClicker.exe 就是全部内容，
+        # 再放一份带版本号的副本便于归档。
+        $stamp = Get-Date -Format 'yyyyMMdd'
+        $versioned = Join-Path $distDir "AutoClicker_v${Ver}_${stamp}_single_win64.exe"
+        Copy-Item -LiteralPath $exePath -Destination $versioned -Force
+        Write-Ok "      $(Split-Path -Leaf $versioned)"
         return $exePath
     }
 
+    # 绿色目录形态：把整个 AutoClicker\ 文件夹压成 zip。
+    # 注意压的是文件夹里的内容（exe 与依赖平铺在根），
+    # 这样用户解压就能直接双击 exe，不用再进一层。
+    if ($SkipZip) {
+        Write-Host "      (跳过 zip 打包，绿色目录在 build\green\ 下)" -ForegroundColor DarkGray
+        return $exePath
+    }
+
+    $srcDir  = Join-Path $outDir 'AutoClicker'
     $stamp   = Get-Date -Format 'yyyyMMdd'
     $zipName = "AutoClicker_v${Ver}_${stamp}_win64.zip"
     $zipPath = Join-Path $distDir $zipName
 
-    $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("AutoClicker_exe_" + [guid]::NewGuid().ToString('N'))
+    $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("AutoClicker_green_" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
     try {
-        Copy-Item -LiteralPath $exePath -Destination $stage -Force
+        Copy-Item -Path (Join-Path $srcDir '*') -Destination $stage -Recurse -Force
         $readme = Join-Path $ProjectDir 'README.md'
         if (Test-Path -LiteralPath $readme) {
             Copy-Item -LiteralPath $readme -Destination $stage -Force
@@ -423,12 +451,13 @@ function Show-BuildStatus {
 
     # 收集 dist 里的产物；.tar.gz 是 package.sh 的产物，只展示不参与判定，
     # 否则用 ps1 的人会永远看到「过期」。
+    # AutoClicker.exe 与 *_single_win64.exe 是两个文件，两个模式都要列出来
     $artifacts = @()
-    foreach ($pat in @('*.zip', '*.tar.gz', 'AutoClicker.exe')) {
+    foreach ($pat in @('*.zip', '*.tar.gz', 'AutoClicker.exe', '*_single_win64.exe')) {
         $items = Get-ChildItem -LiteralPath $distDir -Filter $pat -File -ErrorAction SilentlyContinue
         foreach ($i in $items) { $artifacts += $i }
     }
-    $artifacts = $artifacts | Sort-Object LastWriteTime -Descending
+    $artifacts = $artifacts | Sort-Object FullName -Unique | Sort-Object LastWriteTime -Descending
 
     if ($artifacts.Count -eq 0) {
         Write-Warn2 "  dist/ 里没有任何产物 —— 需要打包。"
@@ -485,6 +514,26 @@ function Show-BuildStatus {
         Write-Warn2 "  dist/ 里没有今天（$((Get-Date).ToString('yyyy-MM-dd'))）的产物 —— 需要打包。"
     }
 
+    # 该有的形态齐全吗？两种形态产出的文件名不一样，
+    # 只按 mtime 判「过期」发现不了「这一种形态根本没打过」。
+    $todayArtifacts = $artifacts | Where-Object { $_.Name -match "_$todayStamp" }
+    if ($todayArtifacts) {
+        $wantSingle = -not $SkipSingle -and -not $SkipExe
+        $wantGreen  = -not $SkipGreen  -and -not $SkipExe
+        if ($wantGreen) {
+            if (-not ($todayArtifacts | Where-Object { $_.Name -like '*_win64.zip' })) {
+                $allFresh = $false
+                Write-Warn2 ("  今天还没有绿色目录 zip（AutoClicker_v{0}_{1}_win64.zip）" -f $Ver, $todayStamp)
+            }
+        }
+        if ($wantSingle) {
+            if (-not ($todayArtifacts | Where-Object { $_.Name -like '*_single_win64.exe' })) {
+                $allFresh = $false
+                Write-Warn2 ("  今天还没有带版本号的单文件 exe（AutoClicker_v{0}_{1}_single_win64.exe）" -f $Ver, $todayStamp)
+            }
+        }
+    }
+
     # 版本号一致性提醒
     $zipNames = $artifacts | Where-Object { $_.Name -like 'AutoClicker_v*' }
     if ($zipNames) {
@@ -513,14 +562,19 @@ Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "[INFO] Project : $ProjectDir"
 Write-Host "[INFO] Version : $Version"
 
-# 默认打 exe；-SkipExe 才跳过。-BuildExe 是旧用法，保留兼容。
-$doExe = (-not $SkipExe)
-Write-Host "[INFO] Target  : 单文件 exe (AutoClicker.exe)"
-if ($SkipExe) { Write-Host "[INFO] -SkipExe 已指定，本次不打 exe" -ForegroundColor DarkGray }
+# 默认两种形态都打。只要一种时用 -SkipSingle / -SkipGreen。
+# -SkipExe 保留旧语义：两种都不打（只重生成 README 之类）。
+$wantSingle = (-not $SkipExe) -and (-not $SkipGreen)
+$wantGreen  = (-not $SkipExe) -and (-not $SkipSingle)
+$forms = @()
+if ($wantSingle) { $forms += '单文件 exe' }
+if ($wantGreen)  { $forms += '绿色目录 zip' }
+if ($forms.Count -eq 0) { $forms += '（不打可执行文件）' }
+Write-Host "[INFO] Target  : $($forms -join ' + ')"
 if ($WithSource) { Write-Host "[INFO] -WithSource 已指定，额外打源码 zip" -ForegroundColor DarkGray }
 Write-Host ""
 
-$results = @{ Readme = $null; Zip = $null; Exe = $null }
+$results = @{ Readme = $null; Zip = $null; Exe = $null; Green = $null }
 
 # 每次运行都先报一下 dist/ 里的产物是不是最新的
 $fresh = Show-BuildStatus -Ver $Version -ExpectSource ([bool]$WithSource)
@@ -565,37 +619,50 @@ try {
         New-Readme -PythonExe $py.Exe
         $results.Readme = Join-Path $ProjectDir 'README.md'
     } else {
-        Write-Warn2 "[1/3] Skip README generation."
+        Write-Warn2 "[1/4] Skip README generation."
     }
 
-    # exe 是主产物，先做
-    if ($doExe) {
-        $results.Exe = Build-Exe -PythonExe $py.Exe -Ver $Version
+    # 两种形态各打一次。dist\ 先清空，免得上一轮的旧产物混进来。
+    if ($wantSingle -or $wantGreen) {
+        $distDir = Join-Path $ProjectDir 'dist'
+        if (Test-Path -LiteralPath $distDir) {
+            Remove-Item $distDir -Recurse -Force
+        }
+        New-Item -ItemType Directory -Path $distDir -Force | Out-Null
+    }
+
+    if ($wantSingle) {
+        $results.Exe = Build-Exe -PythonExe $py.Exe -Ver $Version -Mode 'onefile'
     } else {
-        Write-Warn2 "[2/3] Skip exe build (-SkipExe)."
+        Write-Warn2 "[2/4] Skip single exe (-SkipGreen / -SkipExe)."
+    }
+
+    if ($wantGreen) {
+        $results.Green = Build-Exe -PythonExe $py.Exe -Ver $Version -Mode 'onedir'
+    } else {
+        Write-Warn2 "[3/4] Skip green dir zip (-SkipSingle / -SkipExe)."
     }
 
     # 源码 zip 只在显式 -WithSource 时打
     if ($WithSource -and -not $SkipZip) {
         $results.Zip = New-SourcePackage -Ver $Version
     } elseif ($WithSource) {
-        Write-Warn2 "[3/3] Skip source zip (-SkipZip)."
+        Write-Warn2 "[4/4] Skip source zip (-SkipZip)."
     } else {
-        Write-Host "[3/3] Skip source zip (用 -WithSource 可额外打一份)." -ForegroundColor DarkGray
+        Write-Host "[4/4] Skip source zip (用 -WithSource 可额外打一份)." -ForegroundColor DarkGray
     }
 
     Write-Host ""
     Write-Host "============================================" -ForegroundColor Cyan
     Write-Ok " Done!"
     if ($results.Readme) { Write-Host "   README : README.md" }
-    if ($results.Exe) {
-        $exeFile = Join-Path $ProjectDir 'dist\AutoClicker.exe'
-        if (Test-Path -LiteralPath $exeFile) {
-            $mb = [math]::Round((Get-Item $exeFile).Length / 1MB, 1)
-            Write-Host "   EXE    : dist\AutoClicker.exe  ($mb MB)"
-        }
-        if ($results.Exe -ne $exeFile) {
-            Write-Host "   Release: dist\$((Split-Path -Leaf $results.Exe))"
+    $distAbs = Join-Path $ProjectDir 'dist'
+    if (Test-Path -LiteralPath $distAbs) {
+        Get-ChildItem -LiteralPath $distAbs -File | Where-Object {
+            $_.Extension -in @('.exe', '.zip', '.gz')
+        } | Sort-Object Name | ForEach-Object {
+            $mb = [math]::Round($_.Length / 1MB, 2)
+            Write-Host ("   {0,-46} {1,8} MB" -f $_.Name, $mb)
         }
     }
     if ($results.Zip)    { Write-Host "   Source : dist\$((Split-Path -Leaf $results.Zip))" }
