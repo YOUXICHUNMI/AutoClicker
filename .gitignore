@@ -15,6 +15,12 @@ log/
 *.db
 *.sqlite3
 
+# 运行期数据目录（正常经启动脚本/exe 运行时落在 dist/ 下，
+# 直接跑 `python main.py` 时才会落到项目根，同样不该进版本库）
+/config/
+/dist/log/
+/dist/config/
+
 # 打包产物
 dist/
 build/

@@ -68,13 +68,36 @@
 
 | 项目 | 要求 |
 |------|------|
-| 操作系统 | Windows 10 / 11（依赖 Win32 API，**不支持 macOS / Linux**） |
+| 操作系统 | **Windows 10 / 11**（连点功能必需）；Linux / macOS 仅可查看和编辑配置 |
 | Python | >= 3.10 |
 | 依赖 | PyQt6 >= 6.6.0、keyboard >= 0.13.5 |
 
 > ⚠️ **`keyboard` 库注册全局热键需要管理员权限。** 非管理员运行时程序不会报错，但热键会静默失效。建议始终以管理员身份运行。
 
-> ⚠️ `script/install.sh` 与 `script/run.sh` 是 Linux/macOS 的残留脚本，本项目仅支持 Windows，可忽略。
+### 跨平台支持程度
+
+连点依赖 Win32 的 `SendInput`（前台）与 `PostMessage`（后台），这是 Windows 独有的，无法在其它系统上复现。
+因此本项目在非 Windows 平台上**降级为只读模式**：
+
+| 能力 | Windows | Linux / macOS |
+|------|---------|---------------|
+| 查看 / 新建 / 编辑 / 复制配置 | ✅ | ✅ |
+| 编辑动作序列、连点参数、热键 | ✅ | ✅ |
+| 目标窗口列表、进程选择 | ✅ | ⬜ 返回空列表 |
+| 坐标拾取 | ✅ | ⬜ 不可用 |
+| **开始连点** | ✅ | ❌ 按钮禁用，点击会弹窗说明原因 |
+| 全局热键 | ✅ | ❌（`keyboard` 需 root 读 `/dev/input`） |
+
+非 Windows 启动时，状态栏会显示：
+
+```
+只读模式 | 当前平台 (linux) 不支持输入模拟，仅可查看和编辑配置
+```
+
+技术上由 `core/click_engine.py` 的 `IS_WINDOWS` 守卫实现：非 Windows 下 `ctypes.windll` /
+`ctypes.wintypes` / `ctypes.WINFUNCTYPE` 都不存在，模块会用具名空间造出等价的最小类型，
+把各输入函数降级为空操作（返回 `False` / `(1, 1)` / 空列表），因此**整个程序仍能正常导入和启动**。
+`ui/styles.py` 的 `winreg` 同样做了 `ImportError` 保护（非 Windows 改读 `COLORSCHEME` 环境变量）。
 
 ---
 
@@ -100,16 +123,25 @@ python main.py
 
 ### 方式三：一键脚本
 
+Windows（批处理）：
+
 ```bat
 script\install.bat
 script\run.bat
 ```
 
-或 PowerShell：
+Windows（PowerShell）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File script\install.ps1
 powershell -ExecutionPolicy Bypass -File script\run.ps1
+```
+
+Linux / macOS：
+
+```bash
+./script/install.sh
+./start.sh          # 或 ./script/run.sh
 ```
 
 > 📌 **`install` 脚本带自愈能力**：若 `.venv` 存在但解释器已无法运行（例如创建它的 Python 被卸载或移位），脚本会自动删除并重建，无需你手动清理。
@@ -208,15 +240,15 @@ exe 是 **onefile** 模式，启动时会把自己解压到 `%TEMP%\_MEIxxxxxx\`
 
 ### 数据目录：源码运行与 exe 运行共用 `dist/`
 
-`start.bat` 和 `script/run.bat` / `run.ps1` / `run.sh` 都会先设置环境变量
+`start.bat` / `start.sh` 和 `script/run.bat` / `run.ps1` / `run.sh` 都会先设置环境变量
 `AUTOCLICKER_DATA_DIR=<项目根>/dist`，再由 `utils/app_paths.py` 的 `app_root()` 优先读取它。
 
-所以无论你是双击 `start.bat` 跑源码，还是双击 `dist/AutoClicker.exe`，读写的都是同一份
+所以无论你是双击 `start.bat`（或跑 `./start.sh`）跑源码，还是双击 `dist/AutoClicker.exe`，读写的都是同一份
 `dist/config/config.json` 与 `dist/log/`：
 
 | 运行方式 | 配置 | 日志 |
 |----------|------|------|
-| `start.bat` / `script\run.bat` / `run.ps1` / `run.sh` | `dist/config/config.json` | `dist/log/app_YYYY-MM-DD.log` |
+| `start.bat` / `start.sh` / `script\run.*` | `dist/config/config.json` | `dist/log/app_YYYY-MM-DD.log` |
 | `dist/AutoClicker.exe` | `dist/config/config.json` | `dist/log/app_YYYY-MM-DD.log` |
 | `.venv\Scripts\python.exe main.py`（不设环境变量） | `config/config.json` | `log/app_YYYY-MM-DD.log` |
 
@@ -541,6 +573,23 @@ script\install.bat
 日志在数据目录下的 `log/app_YYYY-MM-DD.log`（经启动脚本或 exe 运行时是 `dist/log/`）。
 主线程异常由 `sys.excepthook` 记录，工作线程（连点引擎、热键）异常由 `threading.excepthook`
 记录，日志行前缀为 `[THREAD:线程名]`。
+
+### 在 Linux / macOS 上跑不起来
+
+界面能起，但「开始连点」是灰的 —— 这**不是 bug**，是设计如此（见上文「跨平台支持程度」）。
+
+常见的启动失败与原因：
+
+| 现象 | 原因 | 处理 |
+|------|------|------|
+| `ModuleNotFoundError: No module named 'PyQt6.QtWidgets'` | 缺 Qt 运行库 | `sudo apt install libgl1 libegl1`（Debian/Ubuntu） |
+| `ImportError: libGL.so.1` | 同上，缺 OpenGL | `sudo apt install libgl1` |
+| `keyboard` 导入报 `Unsupported platform` | `keyboard` 依赖 Windows API | 属正常，热键在非 Windows 上不可用 |
+| `./script/install.sh: Permission denied` | 文件没有可执行位 | `bash script/install.sh`，或 `chmod +x script/*.sh` |
+| `$'\r': command not found` | 脚本被 CRLF 换行污染 | `sed -i 's/\r$//' script/*.sh && sed -i 's/\r$//' start.sh` |
+
+> 📌 仓库已通过 `.gitattributes` 固定换行：`.sh` 检出为 LF、`.bat`/`.cmd`/`.ps1` 检出为 CRLF，
+> 并给三个 `.sh` 脚本登记了可执行位（`100755`）。所以正常 `git clone` 下来不会出现上面后两条。
 
 ---
 

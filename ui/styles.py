@@ -4,7 +4,17 @@
 颜色方案基于 Catppuccin Mocha (深色) 与 Catppuccin Latte (浅色)。
 """
 
-import winreg
+import os
+import sys
+
+# winreg 只在 Windows 上存在；Linux / macOS 上 import 会失败，
+# 所以用 try/except 包住，让本模块在任意平台都能被导入（非 Windows 走默认主题）。
+try:
+    import winreg
+except ImportError:  # pragma: no cover - 仅非 Windows 平台走到这里
+    winreg = None
+
+IS_WINDOWS = sys.platform == "win32"
 
 
 # ============================================================
@@ -319,22 +329,34 @@ MAIN_STYLE = DARK_STYLE
 # ============================================================
 
 def detect_system_dark():
-    """检测 Windows 系统是否使用暗色主题
+    """检测系统是否使用暗色主题
+
+    Windows 读注册表；其它平台按桌面环境的环境变量粗略判断，
+    都判断不了时返回暗色（与 Windows 上的默认行为一致）。
 
     Returns:
         True 表示暗色模式，False 表示浅色模式
     """
-    try:
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-        )
-        value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-        winreg.CloseKey(key)
-        # AppsUseLightTheme: 0 = 暗色, 1 = 浅色
-        return value == 0
-    except Exception:
-        return True  # 检测失败时默认暗色
+    if IS_WINDOWS and winreg is not None:
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+            )
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            winreg.CloseKey(key)
+            # AppsUseLightTheme: 0 = 暗色, 1 = 浅色
+            return value == 0
+        except Exception:
+            return True  # 检测失败时默认暗色
+
+    # 非 Windows：部分桌面环境会把当前配色方案导到环境变量里
+    color_scheme = os.environ.get("COLORSCHEME", "").lower()
+    if "dark" in color_scheme:
+        return True
+    if "light" in color_scheme:
+        return False
+    return True
 
 
 # ============================================================

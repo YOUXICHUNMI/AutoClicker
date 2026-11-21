@@ -5,8 +5,8 @@
 """
 
 import ctypes
-import ctypes.wintypes as wintypes
 import os
+import sys
 import time
 import threading
 import logging
@@ -14,6 +14,66 @@ import logging
 from utils.logger import setup_logger, log_exception
 
 logger = setup_logger("click_engine")
+
+# ============================================================
+# 平台判定
+# ============================================================
+# 本模块的输入模拟依赖 Windows 的 SendInput / PostMessage / EnumWindows。
+# 在非 Windows 平台（Linux / macOS）上，模块依然要能正常导入，否则界面打不开，
+# 所以这里退化成"空实现"：所有查询函数返回安全默认值，所有输入函数不做事并记日志。
+IS_WINDOWS = sys.platform == "win32"
+
+if IS_WINDOWS:
+    import ctypes.wintypes as wintypes
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    WINFUNCTYPE = ctypes.WINFUNCTYPE
+else:
+    # 非 Windows：用等价的 ctypes 基础类型凑出 wintypes 的最小实现，
+    # 让下面的结构体定义在 Linux / macOS 上也能正常构建（仅用于声明，不会被真正调用）。
+    import types as _types
+
+    class _POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+    class _RECT(ctypes.Structure):
+        _fields_ = [
+            ("left", ctypes.c_long),
+            ("top", ctypes.c_long),
+            ("right", ctypes.c_long),
+            ("bottom", ctypes.c_long),
+        ]
+
+    wintypes = _types.SimpleNamespace(
+        BOOL=ctypes.c_int,
+        DWORD=ctypes.c_ulong,
+        WORD=ctypes.c_ushort,
+        HWND=ctypes.c_void_p,
+        LONG=ctypes.c_long,
+        LPARAM=ctypes.c_ssize_t,
+        WPARAM=ctypes.c_size_t,
+        UINT=ctypes.c_uint,
+        ULONG=ctypes.c_ulong,
+        POINT=_POINT,
+        RECT=_RECT,
+    )
+    user32 = None
+    kernel32 = None
+    WINFUNCTYPE = ctypes.CFUNCTYPE
+
+# 非 Windows 下提示只打一次，避免连点循环里刷屏
+_platform_warned = False
+
+
+def _warn_unsupported(action):
+    """非 Windows 平台上的统一降级提示（只打一次）"""
+    global _platform_warned
+    if not _platform_warned:
+        _platform_warned = True
+        logger.error(
+            f"当前平台 ({sys.platform}) 不支持输入模拟：{action} 等操作会被忽略。"
+            " AutoClicker 的连点功能只能在 Windows 上使用。"
+        )
 
 # ============================================================
 # Windows API 常量
@@ -179,6 +239,9 @@ class INPUT(ctypes.Structure):
 
 def _send_mouse(button, down):
     """发送鼠标输入"""
+    if not IS_WINDOWS:
+        _warn_unsupported("鼠标 SendInput")
+        return
     flags = MOUSE_FLAGS.get(button, MOUSE_FLAGS["left"])
     down_flag = flags[0]
     up_flag = flags[1]
@@ -193,11 +256,14 @@ def _send_mouse(button, down):
     inp.mi.time = 0
     inp.mi.dwExtraInfo = ctypes.pointer(wintypes.ULONG(0))
 
-    ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+    user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
 
 
 def _send_keyboard(vk_code, down):
     """发送键盘输入"""
+    if not IS_WINDOWS:
+        _warn_unsupported("键盘 SendInput")
+        return
     inp = INPUT()
     inp.type = INPUT_KEYBOARD
     inp.ki.wVk = vk_code
@@ -209,7 +275,7 @@ def _send_keyboard(vk_code, down):
     inp.ki.time = 0
     inp.ki.dwExtraInfo = ctypes.pointer(wintypes.ULONG(0))
 
-    ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+    user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
 
 
 # ============================================================
@@ -234,27 +300,35 @@ class WINDOWPLACEMENT(ctypes.Structure):
 
 def is_minimized(hwnd):
     """检查窗口是否最小化"""
-    return ctypes.windll.user32.IsIconic(hwnd) != 0
+    if not IS_WINDOWS or not hwnd:
+        return False
+    return user32.IsIconic(hwnd) != 0
 
 
 def is_window(hwnd):
     """检查句柄是否有效"""
-    return ctypes.windll.user32.IsWindow(hwnd) != 0
+    if not IS_WINDOWS or not hwnd:
+        return False
+    return user32.IsWindow(hwnd) != 0
 
 
 def get_top_level_window(hwnd):
     """获取子窗口对应的顶层窗口句柄"""
-    root = ctypes.windll.user32.GetAncestor(hwnd, GA_ROOT)
+    if not IS_WINDOWS or not hwnd:
+        return hwnd
+    root = user32.GetAncestor(hwnd, GA_ROOT)
     return root if root else hwnd
 
 
 def get_window_title(hwnd):
     """获取窗口标题"""
-    length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+    if not IS_WINDOWS or not hwnd:
+        return ""
+    length = user32.GetWindowTextLengthW(hwnd)
     if length == 0:
         return ""
     buf = ctypes.create_unicode_buffer(length + 1)
-    ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+    user32.GetWindowTextW(hwnd, buf, length + 1)
     return buf.value
 
 
@@ -263,8 +337,10 @@ def get_client_size(hwnd):
     获取窗口客户区尺寸 (width, height)。
     对最小化窗口，使用 GetWindowPlacement 获取还原后的尺寸并估算客户区。
     """
+    if not IS_WINDOWS or not hwnd:
+        return (1, 1)
     rect = wintypes.RECT()
-    ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(rect))
+    user32.GetClientRect(hwnd, ctypes.byref(rect))
     w = rect.right - rect.left
     h = rect.bottom - rect.top
     if w > 0 and h > 0:
@@ -273,7 +349,7 @@ def get_client_size(hwnd):
     # 窗口可能最小化，尝试用 WindowPlacement 获取还原尺寸
     placement = WINDOWPLACEMENT()
     placement.length = ctypes.sizeof(WINDOWPLACEMENT)
-    if ctypes.windll.user32.GetWindowPlacement(hwnd, ctypes.byref(placement)):
+    if user32.GetWindowPlacement(hwnd, ctypes.byref(placement)):
         nr = placement.rcNormalPosition
         # rcNormalPosition 包含非客户区（标题栏+边框），粗略减去
         w = max(1, (nr.right - nr.left) - 16)   # 左右边框 ~16px
@@ -284,27 +360,33 @@ def get_client_size(hwnd):
 
 def restore_window(hwnd):
     """还原最小化的窗口（不激活）"""
-    ctypes.windll.user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+    if not IS_WINDOWS or not hwnd:
+        return
+    user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
 
 
 def get_window_under_cursor():
     """获取当前鼠标光标下的顶层窗口句柄和客户区坐标"""
+    if not IS_WINDOWS:
+        return 0, 0, 0
     point = wintypes.POINT()
-    ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
+    user32.GetCursorPos(ctypes.byref(point))
     # WindowFromPoint 返回可能子窗口，需要找到顶层
-    hwnd_raw = ctypes.windll.user32.WindowFromPoint(point)
+    hwnd_raw = user32.WindowFromPoint(point)
     hwnd = get_top_level_window(hwnd_raw) if hwnd_raw else 0
     if hwnd:
         # 转换为客户区坐标
         client_pt = wintypes.POINT(point.x, point.y)
-        ctypes.windll.user32.ScreenToClient(hwnd, ctypes.byref(client_pt))
+        user32.ScreenToClient(hwnd, ctypes.byref(client_pt))
         return hwnd, client_pt.x, client_pt.y
     return 0, 0, 0
 
 
 def is_mouse_button_down():
     """检查鼠标左键是否当前按下"""
-    return (ctypes.windll.user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0
+    if not IS_WINDOWS:
+        return False
+    return (user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0
 
 
 # ============================================================
@@ -321,6 +403,9 @@ def _post_mouse(hwnd, button, down, rel_x=0.5, rel_y=0.5):
     rel_x, rel_y: 相对坐标 (0.0~1.0)，会根据窗口当前客户区尺寸换算为绝对像素坐标。
     窗口缩放时自动按比例重算。
     """
+    if not IS_WINDOWS:
+        _warn_unsupported("后台鼠标 PostMessage")
+        return
     # 获取窗口当前客户区尺寸（支持最小化窗口的回退）
     w, h = get_client_size(hwnd)
     abs_x = int(rel_x * w)
@@ -335,22 +420,25 @@ def _post_mouse(hwnd, button, down, rel_x=0.5, rel_y=0.5):
         wparam = 0
         msg = msgs[1]     # WM_ UP
 
-    ctypes.windll.user32.PostMessageW(hwnd, msg, wparam, lparam)
+    user32.PostMessageW(hwnd, msg, wparam, lparam)
 
 
 def _post_keyboard(hwnd, vk_code, down):
     """通过 PostMessage 向后台窗口发送键盘输入"""
+    if not IS_WINDOWS:
+        _warn_unsupported("后台键盘 PostMessage")
+        return
     if down:
-        ctypes.windll.user32.PostMessageW(hwnd, WM_KEYDOWN, vk_code, 0)
+        user32.PostMessageW(hwnd, WM_KEYDOWN, vk_code, 0)
     else:
-        ctypes.windll.user32.PostMessageW(hwnd, WM_KEYUP, vk_code, 0)
+        user32.PostMessageW(hwnd, WM_KEYUP, vk_code, 0)
 
 
 # ============================================================
 # 窗口枚举
 # ============================================================
-# 回调函数类型
-WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+# 回调函数类型（Windows 用 WINFUNCTYPE，非 Windows 退化为 CFUNCTYPE）
+WNDENUMPROC = WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
 
 def enum_windows_detail():
@@ -362,37 +450,40 @@ def enum_windows_detail():
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     results = []
 
+    if not IS_WINDOWS:
+        return results
+
     def _get_process_name(hwnd):
         """通过窗口句柄获取对应进程的可执行文件名"""
         try:
             pid = wintypes.DWORD()
-            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             if pid.value == 0:
                 return ""
-            handle = ctypes.windll.kernel32.OpenProcess(
+            handle = kernel32.OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
             if not handle:
                 return ""
             try:
                 buf = ctypes.create_unicode_buffer(260)
                 size = wintypes.DWORD(260)
-                if ctypes.windll.kernel32.QueryFullProcessImageNameW(
+                if kernel32.QueryFullProcessImageNameW(
                         handle, 0, buf, ctypes.byref(size)):
                     return os.path.basename(buf.value)
                 return ""
             finally:
-                ctypes.windll.kernel32.CloseHandle(handle)
+                kernel32.CloseHandle(handle)
         except Exception:
             return ""
 
     def _callback(hwnd, lparam):
-        if not ctypes.windll.user32.IsWindow(hwnd):
+        if not user32.IsWindow(hwnd):
             return True
-        length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+        length = user32.GetWindowTextLengthW(hwnd)
         if length == 0:
             return True
         buf = ctypes.create_unicode_buffer(length + 1)
-        ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
         title = buf.value
         if title.strip():
             proc_name = _get_process_name(hwnd)
@@ -400,7 +491,7 @@ def enum_windows_detail():
         return True
 
     proc = WNDENUMPROC(_callback)
-    ctypes.windll.user32.EnumWindows(proc, 0)
+    user32.EnumWindows(proc, 0)
     return results
 
 
@@ -439,9 +530,12 @@ def enum_processes():
     """
     枚举系统中所有运行中的进程，返回 [(pid, process_name), ...]。
     使用 CreateToolhelp32Snapshot + Process32First/Next。
+    非 Windows 平台没有 Toolhelp，直接返回空列表。
     """
     results = []
-    snapshot = ctypes.windll.kernel32.CreateToolhelp32Snapshot(
+    if not IS_WINDOWS:
+        return results
+    snapshot = kernel32.CreateToolhelp32Snapshot(
         TH32CS_SNAPPROCESS, 0)
     if snapshot == INVALID_HANDLE_VALUE:
         logger.warning("CreateToolhelp32Snapshot 失败")
@@ -451,17 +545,17 @@ def enum_processes():
     entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
 
     try:
-        if ctypes.windll.kernel32.Process32FirstW(
+        if kernel32.Process32FirstW(
                 snapshot, ctypes.byref(entry)):
             while True:
                 results.append((entry.th32ProcessID, entry.szExeFile))
-                if not ctypes.windll.kernel32.Process32NextW(
+                if not kernel32.Process32NextW(
                         snapshot, ctypes.byref(entry)):
                     break
     except Exception as e:
         log_exception(logger, e, "枚举进程失败")
     finally:
-        ctypes.windll.kernel32.CloseHandle(snapshot)
+        kernel32.CloseHandle(snapshot)
 
     return results
 
@@ -539,6 +633,12 @@ class ClickEngine:
 
     def start(self, profile):
         """开始执行连点"""
+        if not IS_WINDOWS:
+            logger.error(
+                f"当前平台 ({sys.platform}) 不支持输入模拟，无法开始连点。"
+                " 连点功能依赖 Windows 的 SendInput / PostMessage，只能在 Windows 上使用。"
+            )
+            return False
         with self._lock:
             if self._running:
                 return False

@@ -22,6 +22,8 @@ from utils.app_paths import resource_path
 from utils.config_manager import ConfigManager
 from utils.logger import setup_logger, install_global_handler, log_exception
 
+IS_WINDOWS = sys.platform == "win32"
+
 # 初始化日志
 logger = setup_logger("main")
 
@@ -33,6 +35,14 @@ def main():
     logger.info("=" * 60)
     logger.info("AutoClicker 启动")
     logger.info(f"项目目录: {PROJECT_ROOT}")
+
+    # 平台提示：输入模拟依赖 Windows API
+    if not IS_WINDOWS:
+        logger.warning("=" * 60)
+        logger.warning(f"当前平台: {sys.platform} —— 输入模拟不可用")
+        logger.warning("连点功能依赖 Windows 的 SendInput / PostMessage API，")
+        logger.warning("在本平台上只能查看和编辑配置，无法真正模拟鼠标键盘。")
+        logger.warning("=" * 60)
 
     # 安装全局异常钩子
     install_global_handler(logger)

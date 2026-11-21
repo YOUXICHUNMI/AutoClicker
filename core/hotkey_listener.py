@@ -4,11 +4,14 @@
 即使软件在后台/最小化，热键依然能触发。
 """
 
+import sys
 import threading
 
 from utils.logger import setup_logger, log_exception
 
 logger = setup_logger("hotkey")
+
+IS_WINDOWS = sys.platform == "win32"
 
 try:
     import keyboard
@@ -16,6 +19,15 @@ try:
 except ImportError:
     _HAS_KEYBOARD = False
     logger.warning("keyboard 库未安装，热键功能不可用")
+except Exception as e:  # keyboard 在非 Windows 上可能因缺少 /dev/input 权限等报其它错
+    _HAS_KEYBOARD = False
+    logger.warning(f"keyboard 库初始化失败，热键功能不可用: {e}")
+
+if _HAS_KEYBOARD and not IS_WINDOWS:
+    logger.warning(
+        "非 Windows 平台：keyboard 库需要 root 权限才能读取 /dev/input，"
+        "全局热键通常不可用。"
+    )
 
 
 class HotkeyListener:

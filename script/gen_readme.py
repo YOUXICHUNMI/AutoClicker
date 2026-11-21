@@ -139,17 +139,18 @@ def build_tree(root, prefix="", rel=""):
 
 def get_git_info():
     """返回 'hash (date) subject'，无 git 或失败时返回 None"""
+    # 显式指定 utf-8：Windows 中文区域默认用 GBK 解码子进程输出，
+    # 遇到 UTF-8 的中文提交信息会直接抛 UnicodeDecodeError。
+    kw = dict(cwd=PROJECT_DIR, capture_output=True, encoding="utf-8",
+              errors="replace", timeout=10)
     try:
-        r = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
-                           cwd=PROJECT_DIR, capture_output=True, text=True,
-                           timeout=10)
+        r = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], **kw)
         if r.returncode != 0:
             return None
 
         def one(*args):
-            p = subprocess.run(["git"] + list(args), cwd=PROJECT_DIR,
-                               capture_output=True, text=True, timeout=10)
-            return p.stdout.strip() if p.returncode == 0 else ""
+            p = subprocess.run(["git"] + list(args), **kw)
+            return p.stdout.strip() if p.returncode == 0 and p.stdout else ""
 
         h = one("log", "-1", "--format=%h")
         d = one("log", "-1", "--format=%ad", "--date=short")

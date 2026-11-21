@@ -22,7 +22,7 @@ from core.click_engine import (
     ClickEngine, VK_MAP, enum_windows, enum_windows_detail,
     get_window_under_cursor, is_mouse_button_down,
     get_client_size, find_window_by_title, get_window_title,
-    is_minimized, restore_window, is_window
+    is_minimized, restore_window, is_window, IS_WINDOWS
 )
 from core.hotkey_listener import HotkeyListener
 from utils.app_paths import resource_path
@@ -409,11 +409,22 @@ class MainWindow(QMainWindow):
         ctrl_row.setContentsMargins(12, 8, 12, 8)
         ctrl_row.setSpacing(10)
 
-        self.start_btn = QPushButton("▶  开始连点")
+        # 非 Windows 平台：输入模拟不可用，直接禁用「开始连点」并说明原因
+        _start_hint = "▶  开始连点"
+        if not IS_WINDOWS:
+            _start_hint = "▶  开始连点 (仅 Windows 可用)"
+
+        self.start_btn = QPushButton(_start_hint)
         self.start_btn.setObjectName("startBtn")
         self.start_btn.setMinimumHeight(40)
         self.start_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.start_btn.clicked.connect(self._on_start)
+        self.start_btn.setEnabled(IS_WINDOWS)
+        if not IS_WINDOWS:
+            self.start_btn.setToolTip(
+                f"当前平台 ({sys.platform}) 不支持输入模拟。\n"
+                "连点功能依赖 Windows 的 SendInput / PostMessage API。"
+            )
         self.stop_btn = QPushButton("■  停止")
         self.stop_btn.setObjectName("stopBtn")
         self.stop_btn.setMinimumHeight(40)
@@ -428,7 +439,11 @@ class MainWindow(QMainWindow):
         main_layout.addStretch(1)
 
         # --- 状态栏 ---
-        self.statusBar().showMessage("就绪 | 热键启动/停止可后台使用")
+        if IS_WINDOWS:
+            self.statusBar().showMessage("就绪 | 热键启动/停止可后台使用")
+        else:
+            self.statusBar().showMessage(
+                f"只读模式 | 当前平台 ({sys.platform}) 不支持输入模拟，仅可查看和编辑配置")
 
     def _apply_default_size(self):
         """按内容实际需要和屏幕大小决定初始窗口尺寸。
@@ -997,6 +1012,14 @@ class MainWindow(QMainWindow):
     def _on_start(self):
         if self.engine.is_running:
             return
+        if not IS_WINDOWS:
+            QMessageBox.information(
+                self, "当前平台不支持",
+                f"连点功能依赖 Windows 的 SendInput / PostMessage API，\n"
+                f"当前平台 ({sys.platform}) 无法模拟鼠标键盘。\n\n"
+                f"界面上的配置仍可正常查看和编辑。"
+            )
+            return
         try:
             prof = self._get_active_profile()
             if not prof or not prof.get("actions"):
@@ -1054,12 +1077,12 @@ class MainWindow(QMainWindow):
         except Exception as e:
             log_exception(logger, e, "启动连点失败")
             QMessageBox.critical(self, "错误", f"启动失败: {e}")
-            self.start_btn.setEnabled(True)
+            self.start_btn.setEnabled(IS_WINDOWS)
             self.stop_btn.setEnabled(False)
 
     def _on_stop(self):
         self.engine.stop()
-        self.start_btn.setEnabled(True)
+        self.start_btn.setEnabled(IS_WINDOWS)
         self.stop_btn.setEnabled(False)
         self.statusBar().showMessage("已停止")
 
@@ -1077,7 +1100,7 @@ class MainWindow(QMainWindow):
             # 循环结束：恢复 UI 状态
             def _on_finished():
                 self.statusBar().showMessage("已完成")
-                self.start_btn.setEnabled(True)
+                self.start_btn.setEnabled(IS_WINDOWS)
                 self.stop_btn.setEnabled(False)
                 self.run_movie.stop()
                 self.run_gif_label.setPixmap(self._static_icon.pixmap(48, 48))
@@ -1105,7 +1128,11 @@ class MainWindow(QMainWindow):
         if self.hotkey.available:
             self.hotkey.update_hotkeys(start_key, stop_key)
         else:
-            self.statusBar().showMessage("警告: keyboard 库未安装，热键功能不可用")
+            # 非 Windows 下状态栏常驻"只读模式"提示，不要用它覆盖掉
+            if IS_WINDOWS:
+                self.statusBar().showMessage("警告: keyboard 库未安装，热键功能不可用")
+            else:
+                logger.warning("keyboard 不可用，全局热键已跳过注册")
 
     def _apply_hotkeys(self):
         self._auto_save_profile()
