@@ -189,21 +189,25 @@ script\package.cmd -Version 1.0.0 -BuildExe
 
 ```
 ------------- 打包产物检测 -------------
-  源码最新改动: 2026-11-20 21:59:38  (script\package.ps1)
-  [最新] AutoClicker_v1.0.0_20261120_win64.zip  (33.38 MB, 1 分钟前)
-  [最新] AutoClicker.exe  (33.67 MB, 1 分钟前)
-  [最新] AutoClicker_v1.0.0_20261120.zip  (0.1 MB, 1 分钟前)
-  [跳过] AutoClicker_v1.0.0_20261120.tar.gz  (0.08 MB, 1 小时前)  package.sh 的产物
+  源码最新改动: 2026-11-21 13:50:25  (README.md)
+  [最新] AutoClicker_v1.0.0_20261121_win64.zip  (33.39 MB, 1 分钟前)
+  [最新] AutoClicker.exe  (33.68 MB, 1 分钟前)
+  [最新] AutoClicker_v1.0.0_20261121.zip  (0.11 MB, 1 分钟前)
+  [跳过] AutoClicker_v1.0.0_20261121.tar.gz  (0.09 MB, 52 分钟前)  package.sh 的产物
+  [归档] AutoClicker_v1.0.0_20261120_win64.zip  (33.38 MB, 16 小时前)  历史产物，不参与判定
+  [归档] AutoClicker_v1.0.0_20261120.zip  (0.1 MB, 16 小时前)  历史产物，不参与判定
 ----------------------------------------
   结论: 产物已是最新，无需重新打包。
 ```
 
 判定规则：
 
-- 取源码里最新修改的那个文件的时间（只看 `main.py` / `core/` / `ui/` / `utils/` / `config/` / `script/` / `README.md` / `requirements.txt`，自动跳过 `.venv`、`__pycache__`、`log`、`dist`、`build` 等）
+- 取源码里最新修改的那个文件的时间（只看 `main.py` / `core/` / `ui/` / `utils/` / `script/` / `README.md` / `requirements.txt`，自动跳过 `.venv`、`__pycache__`、`log`、`dist`、`build`；`config/` 与 `log/` 是运行期数据，现在落在 `dist/` 下，不算源码）
 - `dist/` 里每个产物与这个时间比对：更早的标 `[过期]`，更晚的标 `[最新]`
+- **文件名日期戳不是今天的标 `[归档]`，不参与判定**。同一天重复打包会覆盖同名文件，换了一天旧文件就留在 `dist/` 里；它们不可能是本次打包的预期产物，拿它们比时间只会永远报过期。
 - `.tar.gz` 只由 `package.sh` 产出，在 ps1 里只显示 `[跳过]`，不参与判定（反之 `.exe` 在非 Windows 平台也不参与）
-- 有任何一个产物过期，结论就是「建议重新打包」
+- `dist/` 里一个今天的产物都没有（只剩归档），也判定为需要打包
+- 有任何一个**今天的**产物过期，结论就是「建议重新打包」
 
 三种用法：
 
@@ -212,6 +216,9 @@ script\package.cmd -Version 1.0.0 -BuildExe
 | （不加） | 先检测，再打包。若产物已最新且是交互终端，会问一句「仍要重新打包吗？[y/N]」，回车即跳过 |
 | `--check-only` / `-CheckOnly` | 只检测，检测完就退出。已最新 `exit 0`，有过期 `exit 2`，可直接用在 CI 里做判断 |
 | `--force` / `-Force` | 跳过那句确认，无论如何都打一遍 |
+
+> 三个脚本的自检结论必须一致：同一份 `dist/` 分别用 `package.ps1 -CheckOnly`、
+> `package.cmd -CheckOnly`、`package.sh --check-only` 跑，输出和退出码要相同。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File script\package.ps1 -CheckOnly

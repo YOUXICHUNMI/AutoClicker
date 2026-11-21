@@ -422,6 +422,7 @@ function Show-BuildStatus {
     }
 
     $allFresh = $true
+    $todayCount = 0
     foreach ($a in $artifacts) {
         $sizeMb = [math]::Round($a.Length / 1MB, 2)
         $age    = (Get-Date) - $a.LastWriteTime
@@ -433,11 +434,18 @@ function Show-BuildStatus {
             '{0} 天前' -f [int]$age.TotalDays
         }
 
-        # .tar.gz / .zip 里的 tar 归 package.sh 管，不参与本地判定
+        # .tar.gz 归 package.sh 管，不参与本地判定
         $other = $a.Name -like '*.tar.gz'
+        # 日期戳不是今天的产物属于历史归档（同一天多次打包会覆盖同名文件，
+        # 换了一天就留成旧文件）。它们不可能是本次打包的预期产物，
+        # 拿它们跟今天的源码比 mtime 只会永远报过期，所以只展示不判定。
+        $todayStamp = Get-Date -Format 'yyyyMMdd'
+        $isOldDate  = ($a.Name -match '_(\d{8})') -and ($Matches[1] -ne $todayStamp)
         $stale = ($a.LastWriteTime -lt $src.Time)
 
-        if ($stale -and -not $other) {
+        if ($isOldDate) {
+            Write-Host  ("  [归档] {0}  ({1} MB, {2})  历史产物，不参与判定" -f $a.Name, $sizeMb, $ageStr) -ForegroundColor DarkGray
+        } elseif ($stale -and -not $other) {
             $allFresh = $false
             Write-Warn2 ("  [过期] {0}  ({1} MB, {2})" -f $a.Name, $sizeMb, $ageStr)
         } elseif ($stale) {
@@ -445,6 +453,14 @@ function Show-BuildStatus {
         } else {
             Write-Ok   ("  [最新] {0}  ({1} MB, {2})" -f $a.Name, $sizeMb, $ageStr)
         }
+
+        if (-not $isOldDate) { $todayCount++ }
+    }
+
+    # 全是历史归档、今天一个产物都没有，同样算需要打包
+    if ($todayCount -eq 0) {
+        $allFresh = $false
+        Write-Warn2 "  dist/ 里没有今天（$((Get-Date).ToString('yyyy-MM-dd'))）的产物 —— 需要打包。"
     }
 
     # 版本号一致性提醒

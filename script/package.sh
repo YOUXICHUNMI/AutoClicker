@@ -334,7 +334,9 @@ show_build_status() {
     echo "  源码最新改动: $(date -d "@$src_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -r "$src_time" '+%Y-%m-%d %H:%M:%S')  ($src_file)"
   fi
 
-  local artifacts n=0 all_fresh=1
+  local artifacts n=0 all_fresh=1 today_count=0
+  local TODAY_STAMP
+  TODAY_STAMP=$(date '+%Y%m%d')
   artifacts=$(find "$dist_dir" -maxdepth 1 -type f \
       \( -name '*.zip' -o -name '*.tar.gz' -o -name 'AutoClicker.exe' \) -print 2>/dev/null)
 
@@ -365,9 +367,22 @@ show_build_status() {
       age_str="${age_d} 天前"
     fi
 
-    if [ "$at" -lt "${src_time:-0}" ]; then
-      # exe 是 package.ps1 的产物，Windows 上 sh 也能打，但非 Windows 不算它
-      if [ "$PLATFORM" != "windows" ] && [ "$(basename "$a")" = "AutoClicker.exe" ]; then
+    # 日期戳不是今天的产物属于历史归档（同一天多次打包会覆盖同名文件，
+    # 换了一天就留成旧文件）。它们不可能是本次打包的预期产物，
+    # 拿它们跟今天的源码比 mtime 只会永远报过期，所以只展示不判定。
+    amonth_stamp=$(basename "$a" | sed -n 's/.*_\([0-9]\{8\}\)[_.].*/\1/p')
+    is_old_date=0
+    if [ -n "$amonth_stamp" ] && [ "$amonth_stamp" != "$TODAY_STAMP" ]; then
+      is_old_date=1
+    fi
+
+    if [ "$is_old_date" -eq 1 ]; then
+      printf '  [归档] %s  (%s MB, %s)  历史产物，不参与判定\n' "$(basename "$a")" "$size_mb" "$age_str"
+    elif [ "${a%.tar.gz}" != "$a" ]; then
+      printf '  [跳过] %s  (%s MB, %s)  package.sh 的产物\n' "$(basename "$a")" "$size_mb" "$age_str"
+    elif [ "$at" -lt "${src_time:-0}" ]; then
+      # AutoClicker.exe 是 package.ps1 的产物，非 Windows 上不算它
+      if [ "$(basename "$a")" = "AutoClicker.exe" ] && [ "$PLATFORM" != "windows" ]; then
         printf '  [跳过] %s  (%s MB, %s)  仅 Windows 产物\n' "$(basename "$a")" "$size_mb" "$age_str"
       else
         all_fresh=0
@@ -376,7 +391,13 @@ show_build_status() {
     else
       ok   "  [最新] $(basename "$a")  (${size_mb} MB, ${age_str})"
     fi
+    if [ "$is_old_date" -eq 0 ]; then today_count=$((today_count + 1)); fi
   done <<< "$artifacts"
+
+  if [ "$today_count" -eq 0 ]; then
+    all_fresh=0
+    warn "  dist/ 里没有今天（$TODAY_STAMP）的产物 —— 需要打包。"
+  fi
 
   echo "----------------------------------------"
   if [ "$all_fresh" -eq 1 ]; then
