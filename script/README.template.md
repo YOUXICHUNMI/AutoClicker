@@ -599,17 +599,34 @@ script\install.bat
 
 | 严重度 | 问题 | 位置 |
 |--------|------|------|
-| 中 | 后台模式只发 `WM_LBUTTONDOWN/UP`，不发 `WM_MOUSEMOVE`，依赖 hover 状态的控件可能无响应 | `core/click_engine.py` `_post_mouse` |
-| 中 | 后台键盘只发 `WM_KEYDOWN/KEYUP`，不发 `WM_CHAR`，输入框类控件不会产生字符 | `core/click_engine.py` `_post_keyboard` |
-| 中 | 进程列表按**进程名**去重，Chrome/Edge 这类多进程应用只显示第一个 PID 的窗口 | `core/click_engine.py` `get_process_window_list` |
 | 中 | 最小化窗口的客户区尺寸靠硬编码减 16px/46px 估算，高 DPI 下会偏 | `core/click_engine.py` `get_client_size` |
 | 低 | `SendInput` 返回值从不检查，被 UIPI 拦截时静默失败 | `core/click_engine.py` `_send_mouse` / `_send_keyboard` |
 | 低 | `settings.start_minimized` 与 `settings.high_precision` 已定义但**从未被读取** | `utils/config_manager.py` |
 | 低 | `HotkeyListener.capture_key()` 未被调用（UI 用 `KeyCaptureEdit` 自行实现） | `core/hotkey_listener.py` |
 | 低 | 主题只在启动时读取，运行中切换系统主题不生效 | `ui/styles.py` |
 
-> 已修复：`target_hwnd` 会污染配置文件（现在 `_auto_save_profile()` 保存前会 `pop` 掉它）；
-> 工作线程崩溃不入日志（现在挂了 `threading.excepthook`）。
+> 已修复：
+> - `target_hwnd` 会污染配置文件 —— 现在 `_auto_save_profile()` 保存前会 `pop` 掉它
+> - 工作线程崩溃不入日志 —— 现在挂了 `threading.excepthook`，前缀 `[THREAD:线程名]`
+> - 后台点击不发 `WM_MOUSEMOVE` —— 现在点击前会先补一条移动消息，X1/X2 的
+>   `wParam` 高字也按 Windows 约定填了 `XBUTTON1` / `XBUTTON2`
+> - 进程列表按进程名去重导致多进程应用丢窗口 —— 现在按 `(pid, 进程名)` 去重，
+>   Chrome / Edge / VS Code 的每个进程窗口都能选到（无窗口进程仍按名字去重，避免列表变噪音）
+
+### 一个曾被误判为 bug 的点
+
+早期报告认为「后台键盘只发 `WM_KEYDOWN/KEYUP`、不发 `WM_CHAR`，所以输入框不会产生字符」。
+实测（`QLineEdit` 接收 `PostMessage`）发现恰恰相反：
+
+| 发送内容 | 输入框结果 |
+|----------|-----------|
+| 只发 `WM_KEYDOWN` + `WM_KEYUP` | `'aa'` —— 已经产生了字符，而且是两个 |
+| 只发 `WM_CHAR` | `'A'` |
+| `WM_KEYDOWN` + `WM_CHAR` + `WM_KEYUP` | `'Aaa'` —— 重复了 |
+
+原因：目标窗口的消息循环会对收到的 `WM_KEYDOWN` 调 `TranslateMessage` 自动生成
+`WM_CHAR`（Qt 这类框架还会额外处理一次，所以是两条）。**再手动补 `WM_CHAR` 只会让字符翻倍**，
+所以代码保持只发 `WM_KEYDOWN/KEYUP`，这是正确行为。
 
 ---
 

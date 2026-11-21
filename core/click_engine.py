@@ -106,6 +106,7 @@ MOUSE_FLAGS = {
 
 # PostMessage 窗口消息常量
 WM_MOUSEFIRST = 0x0200
+WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
 WM_RBUTTONDOWN = 0x0204
@@ -124,13 +125,18 @@ MK_MBUTTON = 0x0010
 MK_XBUTTON1 = 0x0020
 MK_XBUTTON2 = 0x0040
 
+# X 按钮在 wParam 高字里的标识
+XBUTTON1 = 0x0001
+XBUTTON2 = 0x0002
+
 # PostMessage 鼠标消息映射
+# (DOWN 消息, UP 消息, MK_ 按下标志, wParam 高字里的 X 按钮标识)
 POST_MOUSE_MSG = {
-    "left":   (WM_LBUTTONDOWN, WM_LBUTTONUP, MK_LBUTTON),
-    "right":  (WM_RBUTTONDOWN, WM_RBUTTONUP, MK_RBUTTON),
-    "middle": (WM_MBUTTONDOWN, WM_MBUTTONUP, MK_MBUTTON),
-    "x1":     (WM_XBUTTONDOWN, WM_XBUTTONUP, MK_XBUTTON1),
-    "x2":     (WM_XBUTTONDOWN, WM_XBUTTONUP, MK_XBUTTON2),
+    "left":   (WM_LBUTTONDOWN, WM_LBUTTONUP, MK_LBUTTON, 0),
+    "right":  (WM_RBUTTONDOWN, WM_RBUTTONUP, MK_RBUTTON, 0),
+    "middle": (WM_MBUTTONDOWN, WM_MBUTTONUP, MK_MBUTTON, 0),
+    "x1":     (WM_XBUTTONDOWN, WM_XBUTTONUP, MK_XBUTTON1, XBUTTON1),
+    "x2":     (WM_XBUTTONDOWN, WM_XBUTTONUP, MK_XBUTTON2, XBUTTON2),
 }
 
 # ============================================================
@@ -397,11 +403,16 @@ def _make_lparam(x, y):
     return (y << 16) | (x & 0xFFFF)
 
 
-def _post_mouse(hwnd, button, down, rel_x=0.5, rel_y=0.5):
+def _post_mouse(hwnd, button, down, rel_x=0.5, rel_y=0.5, send_move=True):
     """
     通过 PostMessage 向后台窗口发送鼠标点击。
     rel_x, rel_y: 相对坐标 (0.0~1.0)，会根据窗口当前客户区尺寸换算为绝对像素坐标。
     窗口缩放时自动按比例重算。
+
+    send_move: 点击前先补一条 WM_MOUSEMOVE。很多控件（网页、游戏 UI）靠
+    WM_MOUSEMOVE 更新 hover / 命中状态，只发 DOWN/UP 会出现"点了但没反应"。
+    对非 X 按钮，DOWN 时 wParam 的 X 标识位放在高字；
+    UP 时该位必须为 0（Windows 的约定）。
     """
     if not IS_WINDOWS:
         _warn_unsupported("后台鼠标 PostMessage")
@@ -413,12 +424,22 @@ def _post_mouse(hwnd, button, down, rel_x=0.5, rel_y=0.5):
     lparam = _make_lparam(abs_x, abs_y)
 
     msgs = POST_MOUSE_MSG.get(button, POST_MOUSE_MSG["left"])
+    down_msg, up_msg, mk_flag, x_flag = msgs
+
+    # 先把光标"移动"到目标点，控件才会有正确的命中与 hover 状态
+    if send_move:
+        user32.PostMessageW(hwnd, WM_MOUSEMOVE, 0, lparam)
+
     if down:
-        wparam = msgs[2]  # MK_ 常量
-        msg = msgs[0]     # WM_ DOWN
+        msg = down_msg
+        wparam = mk_flag
     else:
+        msg = up_msg
         wparam = 0
-        msg = msgs[1]     # WM_ UP
+
+    # X 按钮的标识要放在 wParam 高字里，且只有 DOWN 消息需要
+    if x_flag and down:
+        wparam = (x_flag << 16) | wparam
 
     user32.PostMessageW(hwnd, msg, wparam, lparam)
 
@@ -565,28 +586,52 @@ def get_process_window_list():
     枚举所有进程，并关联其窗口信息。
     返回 [(pid, process_name, [(hwnd, window_title), ...]), ...]
     有窗口的进程排在前面，无窗口的进程排在后面。
+
+    同一个 .exe 可能启动多个进程（Chrome / Edge / VS Code 都是这样），
+    每个进程有自己的窗口。所以按 (pid, name) 去重，而不是按 name：
+    否则同名进程只会留下第一个 PID 的窗口，其余窗口在进程选择框里全部消失，
+    用户就选不到自己真正想点的那个窗口。
     """
-    # 获取所有窗口，按进程名分组
-    windows = enum_windows_detail()  # [(hwnd, title, proc_name), ...]
-    proc_windows = {}
-    for hwnd, title, proc_name in windows:
-        proc_windows.setdefault(proc_name, []).append((hwnd, title))
+    # 先拿到每个窗口的 (hwnd, title, pid, proc_name)
+    entries = []
+    for hwnd, title, proc_name in enum_windows_detail():
+        pid = 0
+        if IS_WINDOWS:
+            buf = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(buf))
+            pid = buf.value
+        entries.append((pid, proc_name, hwnd, title))
 
-    # 获取所有进程
-    processes = enum_processes()  # [(pid, name), ...]
+    # 按 (pid, name) 分组，同一个进程的多个窗口并到一起
+    grouped = {}
+    order = []
+    for pid, name, hwnd, title in entries:
+        key = (pid, name)
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append((hwnd, title))
 
-    # 去重（同名进程只保留第一个 PID）
-    seen = set()
-    result = []
-    for pid, name in processes:
-        if name in seen:
+    # 把 enum_processes() 里没有窗口的进程也补进来，保持"进程全表"的语义。
+    # 无窗口的进程对"选择目标窗口"毫无用处，所以这部分仍按进程名去重，
+    # 只留第一个 PID —— 否则 Chrome 这类应用会凭空多出几十条噪音行。
+    known = set(grouped.keys())
+    seen_nameless = set()
+    for pid, name in enum_processes():
+        key = (pid, name)
+        if key in known:
             continue
-        seen.add(name)
-        wins = proc_windows.get(name, [])
-        result.append((pid, name, wins))
+        if name in seen_nameless:
+            continue
+        seen_nameless.add(name)
+        known.add(key)
+        grouped[key] = []
+        order.append(key)
 
-    # 有窗口的排前面
-    result.sort(key=lambda x: (len(x[2]) == 0, x[1].lower()))
+    result = [(pid, name, grouped[(pid, name)]) for pid, name in order]
+
+    # 有窗口的排前面；同组内按 "进程名 + 最小 pid" 稳定排序
+    result.sort(key=lambda x: (len(x[2]) == 0, x[1].lower(), x[0]))
     return result
 
 
