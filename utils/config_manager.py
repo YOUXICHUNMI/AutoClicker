@@ -5,8 +5,10 @@ import json
 import os
 from copy import deepcopy
 
-# 配置文件目录（与本项目同级的 config 文件夹）
-CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config")
+from utils.app_paths import app_path
+
+# 配置文件目录（冻结运行时为 exe 同级的 config 文件夹）
+CONFIG_DIR = app_path("config")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 # 默认配置

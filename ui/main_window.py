@@ -8,11 +8,12 @@ import os
 import sys
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout,
     QLabel, QComboBox, QSpinBox, QDoubleSpinBox, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QGroupBox, QCheckBox,
     QSystemTrayIcon, QMenu, QMessageBox, QStatusBar, QAbstractItemView,
-    QApplication, QStyle, QInputDialog, QCompleter, QLineEdit
+    QApplication, QStyle, QInputDialog, QCompleter, QLineEdit,
+    QScrollArea, QFrame, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
 from PyQt6.QtGui import QIcon, QAction, QMovie
@@ -24,6 +25,7 @@ from core.click_engine import (
     is_minimized, restore_window, is_window
 )
 from core.hotkey_listener import HotkeyListener
+from utils.app_paths import resource_path
 from utils.config_manager import ConfigManager
 from ui.action_editor import ActionEditorDialog, KeyCaptureEdit
 from ui.process_picker import ProcessPickerDialog
@@ -46,13 +48,13 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AutoClicker - 自动连点器")
-        self.setMinimumSize(680, 620)
+        # 最小尺寸比旧版（680x620）放宽：内容区已改为可滚动，
+        # 窗口缩到多小都不会把控件挤变形，小屏幕也能完整操作
+        self.setMinimumSize(560, 460)
+        self.resize(820, 720)
 
         # 设置窗口图标
-        icon_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "utils", "static", "Ralsei.png"
-        )
+        icon_path = resource_path("utils", "static", "Ralsei.png")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
@@ -66,6 +68,7 @@ class MainWindow(QMainWindow):
         self._pick_timer = None        # 拾取定时器
 
         self._init_ui()
+        self._apply_default_size()
         self._init_tray()
         self._init_signals()
         self._load_profiles_to_ui()
@@ -78,7 +81,33 @@ class MainWindow(QMainWindow):
         central = QWidget()
         central.setObjectName("central")
         self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
+
+        # 窗口外层：上部是可滚动内容区，下部是常驻的控制栏。
+        # 内容区放进 QScrollArea 的原因：窗口被拖窄时，若直接压缩布局，
+        # 各控件的 minimumSizeHint 之和会超过可用宽度，Qt 只能让相邻控件重叠
+        # （表现为按钮互相挤压、表格和按钮叠在一起）。加了滚动区以后，
+        # 控件保持各自的最小尺寸，放不下就出现滚动条，永远不会互相压。
+        outer_layout = QVBoxLayout(central)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("contentScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        outer_layout.addWidget(scroll, 1)
+
+        content = QWidget()
+        content.setObjectName("contentPane")
+        # 内容最小宽度：窗口再窄也不压缩控件，改为出横向滚动条。
+        # 这个值和下面各行控件的 minimumSizeHint 之和对应，调大控件时同步改。
+        content.setMinimumWidth(510)
+        scroll.setWidget(content)
+
+        main_layout = QVBoxLayout(content)
+        main_layout.setContentsMargins(12, 10, 12, 10)
         main_layout.setSpacing(10)
 
         # --- 顶部运行状态栏（GIF 动画 + 状态文字）---
@@ -89,20 +118,14 @@ class MainWindow(QMainWindow):
         self.run_gif_label = QLabel()
         self.run_gif_label.setFixedSize(48, 48)
         self.run_gif_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        gif_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "utils", "static", "Ralsei_Run.gif"
-        )
+        gif_path = resource_path("utils", "static", "Ralsei_Run.gif")
         self.run_movie = QMovie(gif_path)
         self.run_movie.setScaledSize(QSize(48, 48))
         self.run_movie.frameChanged.connect(
             lambda: self.run_gif_label.setMovie(self.run_movie)
         )
         # 未运行时显示静态图标
-        icon_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "utils", "static", "Ralsei.png"
-        )
+        icon_path = resource_path("utils", "static", "Ralsei.png")
         self._static_icon = QIcon(icon_path)
         self.run_gif_label.setPixmap(self._static_icon.pixmap(48, 48))
         top_bar.addWidget(self.run_gif_label)
@@ -115,12 +138,14 @@ class MainWindow(QMainWindow):
 
         # --- 配置文件选择区 ---
         prof_group = QGroupBox("配置文件")
-        prof_layout = QHBoxLayout(prof_group)
-        prof_layout.addWidget(QLabel("当前配置:"))
+        prof_layout = QGridLayout(prof_group)
+        prof_layout.setHorizontalSpacing(8)
+        prof_layout.setVerticalSpacing(8)
+
         self.profile_combo = QComboBox()
-        self.profile_combo.setMinimumWidth(180)
+        self.profile_combo.setMinimumWidth(120)
+        self.profile_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
-        prof_layout.addWidget(self.profile_combo)
 
         self.add_prof_btn = QPushButton("新建")
         self.add_prof_btn.clicked.connect(self._add_profile)
@@ -130,26 +155,39 @@ class MainWindow(QMainWindow):
         self.del_prof_btn.clicked.connect(self._del_profile)
         self.copy_prof_btn = QPushButton("复制")
         self.copy_prof_btn.clicked.connect(self._copy_profile)
-        prof_layout.addWidget(self.add_prof_btn)
-        prof_layout.addWidget(self.rename_prof_btn)
-        prof_layout.addWidget(self.copy_prof_btn)
-        prof_layout.addWidget(self.del_prof_btn)
-        prof_layout.addStretch()
+        for b in (self.add_prof_btn, self.rename_prof_btn,
+                  self.copy_prof_btn, self.del_prof_btn):
+            b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         # 主题选择
-        prof_layout.addWidget(QLabel("主题:"))
         self.theme_combo = QComboBox()
         self.theme_combo.addItem("深色", "dark")
         self.theme_combo.addItem("浅色", "light")
         self.theme_combo.addItem("自动 (跟随系统)", "auto")
         self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
-        prof_layout.addWidget(self.theme_combo)
+        self.theme_combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        # 第 0 行：配置下拉占满剩余宽度 + 四个操作按钮
+        prof_layout.addWidget(QLabel("当前配置:"), 0, 0)
+        prof_layout.addWidget(self.profile_combo, 0, 1)
+        prof_layout.addWidget(self.add_prof_btn, 0, 2)
+        prof_layout.addWidget(self.rename_prof_btn, 0, 3)
+        prof_layout.addWidget(self.copy_prof_btn, 0, 4)
+        prof_layout.addWidget(self.del_prof_btn, 0, 5)
+        prof_layout.setColumnStretch(1, 1)
+
+        # 第 1 行：主题单独占一行，缩窄窗口时不会把配置行挤爆
+        prof_layout.addWidget(QLabel("主题:"), 1, 0)
+        prof_layout.addWidget(self.theme_combo, 1, 1,
+                              Qt.AlignmentFlag.AlignLeft)
+        prof_layout.setColumnStretch(1, 1)
 
         main_layout.addWidget(prof_group)
 
         # --- 动作序列表 ---
         action_group = QGroupBox("点击动作序列 (按顺序执行)")
         action_layout = QVBoxLayout(action_group)
+        action_layout.setSpacing(8)
 
         self.action_table = QTableWidget(0, 5)
         self.action_table.setHorizontalHeaderLabels(["#", "类型", "按钮/按键", "模式", "参数"])
@@ -160,11 +198,16 @@ class MainWindow(QMainWindow):
         self.action_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.action_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.action_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.action_table.setMinimumHeight(160)
-        action_layout.addWidget(self.action_table)
+        self.action_table.setMinimumHeight(120)
+        # 纵向可伸缩：窗口拉高时表格吃掉多余空间，按钮行保持原高
+        self.action_table.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                        QSizePolicy.Policy.Expanding)
+        self.action_table.verticalHeader().setDefaultSectionSize(28)
+        action_layout.addWidget(self.action_table, 1)
 
-        # 动作操作按钮
+        # 动作操作按钮（换行流式排列，窄窗口下不会被表格压住）
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
         self.add_action_btn = QPushButton("+ 添加动作")
         self.add_action_btn.clicked.connect(self._add_action)
         self.edit_action_btn = QPushButton("编辑")
@@ -177,48 +220,64 @@ class MainWindow(QMainWindow):
         self.down_btn.clicked.connect(self._move_down)
         for b in (self.add_action_btn, self.edit_action_btn, self.del_action_btn,
                   self.up_btn, self.down_btn):
+            b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             btn_row.addWidget(b)
-        btn_row.addStretch()
+        btn_row.addStretch(1)
         action_layout.addLayout(btn_row)
-        main_layout.addWidget(action_group)
+        main_layout.addWidget(action_group, 1)
 
-        # --- 参数设置区 ---
+        # --- 参数设置区（两列网格，垂直更省空间）---
         param_group = QGroupBox("连点参数")
-        param_layout = QFormLayout(param_group)
+        param_layout = QGridLayout(param_group)
+        param_layout.setHorizontalSpacing(10)
+        param_layout.setVerticalSpacing(8)
 
         self.interval_spin = QSpinBox()
         self.interval_spin.setRange(0, 100000)
         self.interval_spin.setSuffix(" ms  (0=最快)")
         self.interval_spin.setToolTip("每轮循环之间的间隔时间。设为0表示尽可能快地连点。")
-        param_layout.addRow("循环间隔:", self.interval_spin)
+        self.interval_spin.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                         QSizePolicy.Policy.Fixed)
 
         self.repeat_spin = QSpinBox()
         self.repeat_spin.setRange(0, 999999)
         self.repeat_spin.setSuffix(" 次  (0=无限)")
-        param_layout.addRow("重复次数:", self.repeat_spin)
+        self.repeat_spin.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                       QSizePolicy.Policy.Fixed)
 
         self.loop_delay_spin = QSpinBox()
         self.loop_delay_spin.setRange(0, 100000)
         self.loop_delay_spin.setSuffix(" ms")
-        param_layout.addRow("循环间额外延迟:", self.loop_delay_spin)
+        self.loop_delay_spin.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                           QSizePolicy.Policy.Fixed)
+
+        param_layout.addWidget(QLabel("循环间隔:"), 0, 0)
+        param_layout.addWidget(self.interval_spin, 0, 1)
+        param_layout.addWidget(QLabel("重复次数:"), 0, 2)
+        param_layout.addWidget(self.repeat_spin, 0, 3)
+        param_layout.addWidget(QLabel("循环间额外延迟:"), 1, 0)
+        param_layout.addWidget(self.loop_delay_spin, 1, 1, 1, 3)
+        param_layout.setColumnStretch(1, 1)
+        param_layout.setColumnStretch(3, 1)
         main_layout.addWidget(param_group)
 
         # --- 目标窗口区 ---
         target_group = QGroupBox("目标窗口 (后台点击)")
-        target_layout = QVBoxLayout(target_group)
+        target_layout = QGridLayout(target_group)
+        target_layout.setHorizontalSpacing(8)
+        target_layout.setVerticalSpacing(8)
 
-        # 第一行：模式 + 窗口选择
-        row1 = QHBoxLayout()
         self.target_mode_combo = QComboBox()
         self.target_mode_combo.addItem("前台模式 (SendInput)", "foreground")
         self.target_mode_combo.addItem("后台模式 (PostMessage)", "background")
         self.target_mode_combo.currentIndexChanged.connect(self._on_target_mode_changed)
-        row1.addWidget(QLabel("模式:"))
-        row1.addWidget(self.target_mode_combo)
+        self.target_mode_combo.setSizePolicy(QSizePolicy.Policy.Fixed,
+                                             QSizePolicy.Policy.Fixed)
 
-        row1.addWidget(QLabel("目标窗口:"))
         self.window_combo = QComboBox()
-        self.window_combo.setMinimumWidth(280)
+        # 只给一个很低的兜底宽度，真正的宽度由 Expanding 拿去，
+        # 这样窄窗口下组合框会跟着变窄，而不是顶宽整行
+        self.window_combo.setMinimumWidth(150)
         self.window_combo.setEnabled(False)
         # 可编辑 + 关键字搜索
         self.window_combo.setEditable(True)
@@ -234,23 +293,39 @@ class MainWindow(QMainWindow):
             edit.setPlaceholderText("输入关键字搜索窗口/进程...")
             edit.returnPressed.connect(self._on_window_search_enter)
         self.window_combo.currentIndexChanged.connect(lambda: self._update_pixel_display() if not self._building_ui else None)
-        row1.addWidget(self.window_combo)
+        self.window_combo.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                        QSizePolicy.Policy.Fixed)
 
         self.refresh_win_btn = QPushButton("刷新")
         self.refresh_win_btn.setEnabled(False)
         self.refresh_win_btn.clicked.connect(self._refresh_windows)
-        row1.addWidget(self.refresh_win_btn)
+        self.refresh_win_btn.setSizePolicy(QSizePolicy.Policy.Fixed,
+                                           QSizePolicy.Policy.Fixed)
 
         self.process_btn = QPushButton("📋 进程")
         self.process_btn.setEnabled(False)
         self.process_btn.clicked.connect(self._on_pick_process)
-        row1.addWidget(self.process_btn)
+        self.process_btn.setSizePolicy(QSizePolicy.Policy.Fixed,
+                                       QSizePolicy.Policy.Fixed)
 
-        row1.addStretch()
-        target_layout.addLayout(row1)
+        # 第 0 行：模式（左）+ 刷新/进程两个按钮靠右
+        # 拆成三行而不是挤一行：「模式 + 目标窗口 + 两个按钮 + 坐标」
+        # 全在一条线上时整组最小宽度会到 730px，窄窗口必然溢出
+        target_layout.addWidget(QLabel("模式:"), 0, 0)
+        target_layout.addWidget(self.target_mode_combo, 0, 1,
+                               Qt.AlignmentFlag.AlignLeft)
+        target_layout.addWidget(self.refresh_win_btn, 0, 2)
+        target_layout.addWidget(self.process_btn, 0, 3)
+        # 末尾空列吃剩余宽度：两个按钮紧跟模式下拉，不会被推到窗口最右边
+        target_layout.setColumnStretch(4, 1)
 
-        # 第二行：固定点击坐标（仅后台模式可用）
+        # 第 1 行：目标窗口下拉单独占满整行（跨到最后的弹性列）
+        target_layout.addWidget(QLabel("目标窗口:"), 1, 0)
+        target_layout.addWidget(self.window_combo, 1, 1, 1, 4)
+
+        # 第 2 行：固定点击坐标（仅后台模式可用）
         row2 = QHBoxLayout()
+        row2.setSpacing(8)
         row2.addWidget(QLabel("点击坐标:"))
         self.click_x_spin = QDoubleSpinBox()
         self.click_x_spin.setRange(0.0, 100.0)
@@ -259,6 +334,9 @@ class MainWindow(QMainWindow):
         self.click_x_spin.setDecimals(1)
         self.click_x_spin.setValue(50.0)
         self.click_x_spin.setEnabled(False)
+        self.click_x_spin.setMinimumWidth(90)
+        self.click_x_spin.setSizePolicy(QSizePolicy.Policy.Fixed,
+                                        QSizePolicy.Policy.Fixed)
         self.click_x_spin.valueChanged.connect(self._on_click_point_changed)
         row2.addWidget(QLabel("X:"))
         row2.addWidget(self.click_x_spin)
@@ -270,6 +348,9 @@ class MainWindow(QMainWindow):
         self.click_y_spin.setDecimals(1)
         self.click_y_spin.setValue(50.0)
         self.click_y_spin.setEnabled(False)
+        self.click_y_spin.setMinimumWidth(90)
+        self.click_y_spin.setSizePolicy(QSizePolicy.Policy.Fixed,
+                                        QSizePolicy.Policy.Fixed)
         self.click_y_spin.valueChanged.connect(self._on_click_point_changed)
         row2.addWidget(QLabel("Y:"))
         row2.addWidget(self.click_y_spin)
@@ -277,56 +358,107 @@ class MainWindow(QMainWindow):
         self.pick_btn = QPushButton("🎯 拾取坐标")
         self.pick_btn.setEnabled(False)
         self.pick_btn.clicked.connect(self._start_pick_coordinate)
+        self.pick_btn.setSizePolicy(QSizePolicy.Policy.Fixed,
+                                    QSizePolicy.Policy.Fixed)
         row2.addWidget(self.pick_btn)
 
         self.pixel_label = QLabel("")
         self.pixel_label.setStyleSheet("color: #a6adc8; font-size: 11px;")
-        row2.addWidget(self.pixel_label)
-        row2.addStretch()
-        target_layout.addLayout(row2)
+        row2.addStretch(1)
+        target_layout.addLayout(row2, 2, 0, 1, 4)
+
+        # 第 3 行：像素提示单独一行——它文字很长，混在坐标行里
+        # 会把整组最小宽度顶到 550px，窄窗口就顶出去了
+        target_layout.addWidget(self.pixel_label, 3, 0, 1, 4)
         main_layout.addWidget(target_group)
 
-        # --- 热键设置区 ---
+        # --- 热键设置区（两列网格，窄窗口也不挤）---
         hotkey_group = QGroupBox("热键设置 (后台生效)")
-        hotkey_layout = QFormLayout(hotkey_group)
+        hotkey_layout = QGridLayout(hotkey_group)
+        hotkey_layout.setHorizontalSpacing(10)
+        hotkey_layout.setVerticalSpacing(8)
 
         self.start_hotkey_edit = KeyCaptureEdit()
         self.start_hotkey_edit.setPlaceholderText("点击后按下热键...")
-        hotkey_layout.addRow("启动热键:", self.start_hotkey_edit)
+        self.start_hotkey_edit.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                             QSizePolicy.Policy.Fixed)
 
         self.stop_hotkey_edit = KeyCaptureEdit()
         self.stop_hotkey_edit.setPlaceholderText("点击后按下热键...")
-        hotkey_layout.addRow("停止热键:", self.stop_hotkey_edit)
+        self.stop_hotkey_edit.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                            QSizePolicy.Policy.Fixed)
 
         apply_hk_btn = QPushButton("应用热键")
         apply_hk_btn.clicked.connect(self._apply_hotkeys)
-        hotkey_layout.addRow("", apply_hk_btn)
+        apply_hk_btn.setSizePolicy(QSizePolicy.Policy.Fixed,
+                                   QSizePolicy.Policy.Fixed)
+
+        hotkey_layout.addWidget(QLabel("启动热键:"), 0, 0)
+        hotkey_layout.addWidget(self.start_hotkey_edit, 0, 1)
+        hotkey_layout.addWidget(QLabel("停止热键:"), 0, 2)
+        hotkey_layout.addWidget(self.stop_hotkey_edit, 0, 3)
+        hotkey_layout.addWidget(apply_hk_btn, 0, 4)
+        hotkey_layout.setColumnStretch(1, 1)
+        hotkey_layout.setColumnStretch(3, 1)
         main_layout.addWidget(hotkey_group)
 
-        # --- 控制按钮 ---
-        ctrl_row = QHBoxLayout()
+        # --- 控制按钮（常驻底部，不随内容滚动）---
+        footer = QWidget()
+        footer.setObjectName("footerBar")
+        ctrl_row = QHBoxLayout(footer)
+        ctrl_row.setContentsMargins(12, 8, 12, 8)
+        ctrl_row.setSpacing(10)
+
         self.start_btn = QPushButton("▶  开始连点")
         self.start_btn.setObjectName("startBtn")
+        self.start_btn.setMinimumHeight(40)
+        self.start_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.start_btn.clicked.connect(self._on_start)
         self.stop_btn = QPushButton("■  停止")
         self.stop_btn.setObjectName("stopBtn")
+        self.stop_btn.setMinimumHeight(40)
+        self.stop_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.stop_btn.clicked.connect(self._on_stop)
         self.stop_btn.setEnabled(False)
         ctrl_row.addWidget(self.start_btn)
         ctrl_row.addWidget(self.stop_btn)
-        main_layout.addLayout(ctrl_row)
+        outer_layout.addWidget(footer, 0)
+
+        # 内容放不下高度时向上收拢，避免控件被拉散
+        main_layout.addStretch(1)
 
         # --- 状态栏 ---
         self.statusBar().showMessage("就绪 | 热键启动/停止可后台使用")
 
+    def _apply_default_size(self):
+        """按内容实际需要和屏幕大小决定初始窗口尺寸。
+
+        内容区各分组的最小高度加起来约 840px（含边距）。屏幕够高就一次
+        展开到能看全，屏幕不够就压到可用区域的 90%，剩下的交给滚动条——
+        无论哪种，控件都不会被挤压变形。
+        """
+        self.resize(820, 720)
+        self.layout().activate() if self.layout() else None
+
+        content_h = 0
+        scroll = self.findChild(QScrollArea, "contentScroll")
+        if scroll is not None and scroll.widget() is not None:
+            content_h = scroll.widget().minimumSizeHint().height()
+
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        width = min(900, max(self.minimumWidth(), avail.width() - 120))
+        # 内容高 + 底部控制栏(≈60) + 状态栏(≈24) + 标题栏(≈32)
+        want_h = content_h + 116 if content_h else 720
+        height = min(want_h, int(avail.height() * 0.9))
+        self.resize(width, max(height, self.minimumHeight()))
     def _init_tray(self):
         """初始化系统托盘"""
         self.tray = QSystemTrayIcon(self)
         # 使用 Ralsei.png 作为托盘图标
-        icon_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "utils", "static", "Ralsei.png"
-        )
+        icon_path = resource_path("utils", "static", "Ralsei.png")
         if os.path.exists(icon_path):
             self.tray.setIcon(QIcon(icon_path))
         else:
@@ -613,6 +745,9 @@ class MainWindow(QMainWindow):
             # 保存点击坐标比例
             prof["click_x"] = round(self.click_x_spin.value() / 100.0, 4)
             prof["click_y"] = round(self.click_y_spin.value() / 100.0, 4)
+            # 运行时缓存的目标句柄绝不能落盘：HWND 每次开机都会变，
+            # 写进配置后下次启动会拿到一个指向别的窗口的陈旧句柄。
+            prof.pop("target_hwnd", None)
             self.config_mgr.save()
         except Exception as e:
             log_exception(logger, e, "自动保存配置失败")

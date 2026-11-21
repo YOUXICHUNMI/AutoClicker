@@ -7,12 +7,14 @@ AutoClicker 日志模块
 import os
 import sys
 import logging
+import threading
 import traceback
 from datetime import datetime
 
-# 日志目录
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOG_DIR = os.path.join(PROJECT_ROOT, "log")
+from utils.app_paths import app_path
+
+# 日志目录（冻结运行时为 exe 同级的 log 文件夹）
+LOG_DIR = app_path("log")
 
 # 日志格式
 LOG_FORMAT = "[%(asctime)s] [%(levelname)-7s] [%(name)-14s] %(message)s"
@@ -53,10 +55,13 @@ def setup_logger(name="app", level=logging.DEBUG):
     logger.addHandler(file_handler)
 
     # 控制台 handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+    # PyInstaller --noconsole 打包后 sys.stdout / sys.stderr 均为 None，
+    # 此时挂 StreamHandler 会在每条日志上抛 AttributeError，直接跳过。
+    if sys.stdout is not None:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
 
     return logger
 
@@ -101,3 +106,22 @@ def install_global_handler(logger):
         logger.error("-" * 60)
 
     sys.excepthook = handle_excepthook
+
+    # 连点引擎跑在 threading.Thread 里，主线程钩子抓不到它的异常，
+    # 必须单独挂 threading.excepthook，否则工作线程崩溃会静默死掉。
+    def handle_thread_excepthook(args):
+        if args.exc_type is SystemExit:
+            return
+        tb_text = "".join(
+            traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
+        ).rstrip()
+        separator = "=" * 60
+        logger.error(separator)
+        logger.error(
+            f"[THREAD:{args.thread.name if args.thread else '?'}] "
+            f"Unhandled exception: {args.exc_type.__name__}: {args.exc_value}"
+        )
+        logger.error(f"[TRACEBACK]\n{tb_text}")
+        logger.error("-" * 60)
+
+    threading.excepthook = handle_thread_excepthook

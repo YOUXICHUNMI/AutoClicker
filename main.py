@@ -18,15 +18,15 @@ from PyQt6.QtGui import QIcon
 
 from ui.main_window import MainWindow
 from ui.styles import get_style
+from utils.app_paths import resource_path
 from utils.config_manager import ConfigManager
 from utils.logger import setup_logger, install_global_handler, log_exception
 
 # 初始化日志
 logger = setup_logger("main")
 
-# 静态资源路径
-STATIC_DIR = os.path.join(PROJECT_ROOT, "utils", "static")
-ICON_PATH = os.path.join(STATIC_DIR, "Ralsei.png")
+# 静态资源路径（冻结运行时从 PyInstaller 的解压目录取）
+ICON_PATH = resource_path("utils", "static", "Ralsei.png")
 
 
 def main():

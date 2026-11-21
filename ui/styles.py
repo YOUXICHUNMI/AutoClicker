@@ -54,6 +54,40 @@ QMainWindow, QDialog, QWidget#central {{
     font-size: 13px;
 }}
 
+/* 可滚动内容区：窗口缩小时靠滚动条解决空间不足，
+   而不是让控件互相挤压重叠 */
+QScrollArea#contentScroll {{
+    background-color: {c['base']};
+    border: none;
+}}
+QWidget#contentPane {{
+    background-color: {c['base']};
+}}
+
+/* 底部常驻控制栏：始终贴底，不随内容滚动 */
+QWidget#footerBar {{
+    background-color: {c['mantle']};
+    border-top: 1px solid {c['surface1']};
+}}
+
+QScrollBar:horizontal {{
+    background: {c['mantle']};
+    height: 10px;
+    border: none;
+    margin: 0px;
+}}
+QScrollBar::handle:horizontal {{
+    background: {c['surface1']};
+    border-radius: 5px;
+    min-width: 30px;
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: {c['surface2']};
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
+}}
+
 QLabel {{
     color: {c['text']};
     background: transparent;
@@ -233,6 +267,7 @@ QScrollBar:vertical {{
     background: {c['mantle']};
     width: 10px;
     border: none;
+    margin: 0px;
 }}
 QScrollBar::handle:vertical {{
     background: {c['surface1']};

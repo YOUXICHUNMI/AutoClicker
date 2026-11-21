@@ -1,157 +1,646 @@
 # AutoClicker
-![](./utils/static/Ralsei.png)  
 
-基于 PyQt6 的 Windows 自动连点器，支持鼠标/键盘动作录制与回放、后台窗口点击、多配置管理、全局热键控制。  
+![Ralsei](./utils/static/Ralsei.png)
 
-在CookieClickWeb端时，不喜欢鼠大侠而且想要后台挂机的连点器，突发奇想让AI随便写了一个。
+**一个用纯 Win32 消息实现「后台点击」的 Windows 自动连点器。**
+
+基于 PyQt6，支持鼠标/键盘动作序列编排、HWND 级后台点击、多配置管理、全局热键控制。
+输入模拟全部走 `ctypes` 直接调用 Win32 API，**不依赖 pywin32 / pynput 等任何第三方 Win32 封装库**。
+
+> 最初的需求很朴素：在 CookieClicker 网页版挂机时，不喜欢鼠大侠，而且想要一个能后台跑、不抢占鼠标的连点器。
+
+---
+
+## 目录
+
+- [功能特性](#功能特性)
+- [环境要求](#环境要求)
+- [快速开始](#快速开始)
+- [项目结构](#项目结构)
+- [架构说明](#架构说明)
+- [使用说明](#使用说明)
+- [动作类型详解](#动作类型详解)
+- [配置说明](#配置说明)
+- [故障排查](#故障排查)
+- [已知问题](#已知问题)
+- [开发说明](#开发说明)
+- [许可证](#许可证)
+
+---
 
 ## 功能特性
 
-- **多动作类型**：鼠标点击、键盘按键、组合键序列
-- **点击模式**：单击（含动作后延迟）、长按（可设为一直按）
-- **后台模式**：通过窗口句柄（HWND）对后台窗口发送点击，不影响前台操作
-- **进程选择**：关键字搜索窗口、进程列表选择目标窗口
-- **多配置管理**：支持多套配置切换、重命名、自动保存
-- **全局热键**：启动/停止热键自定义，托盘最小化
+### 输入能力
+
+- **多动作类型**：鼠标点击、键盘按键、组合键（多键序列，按下顺序执行、逆序释放）
+- **两种点击模式**：单击（带动作后延迟）、长按（可设为「一直按」，启动即按住、停止时才松开）
+- **五个鼠标按钮**：左键、右键、中键、X1（侧键后退）、X2（侧键前进）
+- **完整虚拟键表**：字母、数字、F1–F16、修饰键（含左右区分）、方向键、小键盘、Oem 系列、CapsLock、PrintScreen、Pause
+
+### 双模式输入
+
+| 模式 | 实现 | 适用场景 | 特点 |
+|------|------|----------|------|
+| **前台模式** | `SendInput` | 普通桌面程序 | 走系统输入队列，兼容性最好，但会抢占鼠标焦点 |
+| **后台模式** | `PostMessage` + HWND | 挂机、边点边干别的 | 直接向目标窗口投递消息，**不影响前台操作**，可最小化运行 |
+
+后台模式的点击坐标用**相对比例**（0–100%）而非绝对像素，因此目标窗口移动、改变大小时点击位置依然正确。
+
+### 目标窗口选择
+
+三种方式任选：
+
+1. **关键字搜索**：下拉框输入窗口标题或进程名，`MatchContains` 模糊匹配
+2. **进程列表**：点「📋 进程」从所有进程及其窗口中选择
+3. **鼠标拾取**：点「🎯 拾取坐标」后，鼠标点击目标窗口，自动识别窗口 + 记录相对坐标
+
+### 其它
+
+- **多配置管理**：新建、重命名、复制、删除，切换即生效，改动自动保存
+- **全局热键**：启动/停止热键可自定义（默认 `F6` / `F7`），最小化到托盘后依然生效
 - **三主题系统**：深色（Catppuccin Mocha）、浅色（Catppuccin Latte）、自动跟随系统
-- **日志系统**：异常自动记录到 `log/` 目录，按日期分文件
+- **日志系统**：按日期分文件（`dist/log/app_YYYY-MM-DD.log`），未捕获异常经全局钩子记录完整堆栈
+- **精细计时**：`_precise_sleep` 混合 `time.sleep` 与忙等，间隔可低至 0 ms（极限连点模式）
+
+---
 
 ## 环境要求
 
 | 项目 | 要求 |
 |------|------|
-| 操作系统 | Windows 10/11 |
+| 操作系统 | Windows 10 / 11（依赖 Win32 API，**不支持 macOS / Linux**） |
 | Python | >= 3.10 |
-| 依赖 | PyQt6 >= 6.6.0, keyboard >= 0.13.5 |
+| 依赖 | PyQt6 >= 6.6.0、keyboard >= 0.13.5 |
 
-> `keyboard` 库需要管理员权限才能注册全局热键。建议以管理员身份运行。
+> ⚠️ **`keyboard` 库注册全局热键需要管理员权限。** 非管理员运行时程序不会报错，但热键会静默失效。建议始终以管理员身份运行。
 
-## 项目结构
+> ⚠️ `script/install.sh` 与 `script/run.sh` 是 Linux/macOS 的残留脚本，本项目仅支持 Windows，可忽略。
 
-```
-AutoClicker/
-├── main.py                  # 程序入口
-├── requirements.txt         # 依赖列表
-├── start.bat               # 快捷启动脚本
-├── config/
-│   └── config.json         # 配置文件（自动生成）
-├── core/
-│   └── click_engine.py     # 核心引擎（窗口枚举、进程枚举、点击执行）
-├── ui/
-│   ├── main_window.py      # 主窗口
-│   ├── action_editor.py    # 动作编辑对话框
-│   ├── process_picker.py   # 进程选择对话框
-│   └── styles.py           # 主题样式（深色/浅色/自动）
-├── utils/
-│   ├── config_manager.py   # 配置管理器
-│   ├── logger.py           # 日志模块
-│   └── static/
-│       ├── Ralsei.png      # 应用图标
-│       └── Ralsei_Run.gif  # 运行动画
-├── script/
-│   ├── install.bat         # Windows 安装脚本
-│   ├── install.ps1         # PowerShell 安装脚本
-│   ├── install.sh          # Bash 安装脚本
-│   ├── run.bat             # Windows 启动脚本
-│   ├── run.ps1             # PowerShell 启动脚本
-│   └── run.sh              # Bash 启动脚本
-└── log/                    # 日志目录（自动生成）
-```
+---
 
-## 安装与运行
+## 快速开始
 
-### 方式一：uv（推荐）
-
-[uv](https://github.com/astral-sh/uv) 是高性能的 Python 包管理器，安装速度快、自带虚拟环境管理。
+### 方式一：uv（推荐，最快）
 
 ```bash
-# 1. 安装 uv
 pip install uv
-
-# 2. 创建虚拟环境
 uv venv .venv
-
-# 3. 安装依赖
 uv pip install -r requirements.txt
-
-# 4. 运行
 .venv\Scripts\python.exe main.py
 ```
 
 ### 方式二：pip + venv
 
-```bash
-# 1. 创建虚拟环境
+```bat
 python -m venv .venv
-
-# 2. 激活虚拟环境
 .venv\Scripts\activate
-
-# 3. 安装依赖
 pip install -r requirements.txt
-
-# 4. 运行
 python main.py
 ```
 
 ### 方式三：一键脚本
 
-项目提供了多平台安装和运行脚本，位于 `script/` 目录：
-
-**Windows (CMD):**
 ```bat
 script\install.bat
 script\run.bat
 ```
 
-**Windows (PowerShell):**
+或 PowerShell：
+
 ```powershell
-.\script\install.ps1
-.\script\run.ps1
+powershell -ExecutionPolicy Bypass -File script\install.ps1
+powershell -ExecutionPolicy Bypass -File script\run.ps1
 ```
 
-**Linux / Git Bash:**
+> 📌 **`install` 脚本带自愈能力**：若 `.venv` 存在但解释器已无法运行（例如创建它的 Python 被卸载或移位），脚本会自动删除并重建，无需你手动清理。
+
+### 打包发布
+
+三个脚本功能等价，**同一套逻辑、同一份输出**，按你手边的 shell 任选其一：
+
+| 脚本 | 运行环境 | 打包产物 |
+|------|----------|----------|
+| `script/package.ps1` | Windows PowerShell 5.1+ / PowerShell 7 | `dist/AutoClicker_v{版本}_{日期}.zip`（可选 `-BuildExe` 出 exe） |
+| `script/package.cmd` | Windows 命令提示符（cmd.exe） | 同上（内部转调 PowerShell） |
+| `script/package.sh` | Linux / macOS / Git Bash / MSYS2 | `dist/AutoClicker_v{版本}_{日期}.tar.gz`，系统有 `zip` 时同时出 `.zip` |
+
+三个脚本在打包前都会先检测 `dist/` 里的产物是否最新（见下面的「打包结果自检」）。
+
+```powershell
+# PowerShell（推荐，支持打 exe）
+powershell -ExecutionPolicy Bypass -File script\package.ps1 -Version 1.0.0
+powershell -ExecutionPolicy Bypass -File script\package.ps1 -Version 1.0.0 -BuildExe
+```
+
+```bat
+:: cmd
+script\package.cmd -Version 1.0.0
+script\package.cmd -Version 1.0.0 -BuildExe
+```
+
 ```bash
-chmod +x script/install.sh script/run.sh
-./script/install.sh
-./script/run.sh
+# bash / Git Bash / MSYS2  （Windows 上请用 Git Bash，不要用 WSL 的 bash）
+./script/package.sh --version 1.0.0
+./script/package.sh --version 1.0.0 --build-exe     # 仅 Windows
+./script/package.sh --version 1.0.0 --no-zip        # 只更新文档
 ```
 
-脚本会自动创建 `.venv` 虚拟环境、安装依赖，并使用虚拟环境中的 Python 启动程序。
+三个脚本都做这三件事：
 
-## 依赖列表
+1. 调用 `script/gen_readme.py` —— 扫描源码统计行数、生成目录树、读取 git 版本，**重新生成 `README.md`**（模板在 `script/README.template.md`，改文档请改模板，不要直接改 README）
+2. 打包源码为 `dist/` 下的归档，自动排除 `.venv` / `__pycache__` / `log` / `dist` / `build`，并剔除 `config/config.json`（含本机窗口标题与句柄，首次运行会自动重建）
+3. 加 `--build-exe` / `-BuildExe` 时，用 PyInstaller 打单文件 exe
+
+#### 打包结果自检
+
+**每次运行打包脚本，第一件事都是检查 `dist/` 里现有的产物是不是最新的**，然后再决定要不要打包：
 
 ```
-PyQt6>=6.6.0
-keyboard>=0.13.5
+------------- 打包产物检测 -------------
+  源码最新改动: 2026-11-20 21:59:38  (script\package.ps1)
+  [最新] AutoClicker_v1.0.0_20261120_win64.zip  (33.38 MB, 1 分钟前)
+  [最新] AutoClicker.exe  (33.67 MB, 1 分钟前)
+  [最新] AutoClicker_v1.0.0_20261120.zip  (0.1 MB, 1 分钟前)
+  [跳过] AutoClicker_v1.0.0_20261120.tar.gz  (0.08 MB, 1 小时前)  package.sh 的产物
+----------------------------------------
+  结论: 产物已是最新，无需重新打包。
 ```
 
-| 依赖 | 用途 |
+判定规则：
+
+- 取源码里最新修改的那个文件的时间（只看 `main.py` / `core/` / `ui/` / `utils/` / `config/` / `script/` / `README.md` / `requirements.txt`，自动跳过 `.venv`、`__pycache__`、`log`、`dist`、`build` 等）
+- `dist/` 里每个产物与这个时间比对：更早的标 `[过期]`，更晚的标 `[最新]`
+- `.tar.gz` 只由 `package.sh` 产出，在 ps1 里只显示 `[跳过]`，不参与判定（反之 `.exe` 在非 Windows 平台也不参与）
+- 有任何一个产物过期，结论就是「建议重新打包」
+
+三种用法：
+
+| 参数 | 行为 |
 |------|------|
-| [PyQt6](https://pypi.org/project/PyQt6/) | GUI 框架，提供窗口、控件、样式表 |
-| [keyboard](https://pypi.org/project/keyboard/) | 全局热键注册与监听 |
+| （不加） | 先检测，再打包。若产物已最新且是交互终端，会问一句「仍要重新打包吗？[y/N]」，回车即跳过 |
+| `--check-only` / `-CheckOnly` | 只检测，检测完就退出。已最新 `exit 0`，有过期 `exit 2`，可直接用在 CI 里做判断 |
+| `--force` / `-Force` | 跳过那句确认，无论如何都打一遍 |
+
+```powershell
+powershell -ExecutionPolicy Bypass -File script\package.ps1 -CheckOnly
+```
+
+```bash
+./script/package.sh --check-only
+```
+
+非交互环境（输出被管道重定向、CI 里跑）不会卡在确认上，会直接打印一行提示然后继续打包。
+
+#### 打 exe 说明
+
+```powershell
+powershell -ExecutionPolicy Bypass -File script\package.ps1 -BuildExe
+```
+
+产物：`dist/AutoClicker.exe`（单文件，实测约 33.7 MB）+ `dist/AutoClicker_v{版本}_{日期}_win64.zip`（内含 exe、README、`config/说明.txt`）
+
+exe 是 **onefile** 模式，启动时会把自己解压到 `%TEMP%\_MEIxxxxxx\` 再运行。因此：
+
+- `config/` 和 `log/` 落在 **exe 所在目录**（不是临时目录），配置和日志不会丢 —— 这由 `utils/app_paths.py` 的 `app_root()` 保证
+- 图标、GIF 等只读资源打进包里，由 `resource_path()` 从 `sys._MEIPASS` 读取
+- 首次运行 exe 时若同目录没有 `config/config.json`，会以默认值自动创建
+- 全局热键仍需管理员权限：右键 exe →「以管理员身份运行」
+
+### 数据目录：源码运行与 exe 运行共用 `dist/`
+
+`start.bat` 和 `script/run.bat` / `run.ps1` / `run.sh` 都会先设置环境变量
+`AUTOCLICKER_DATA_DIR=<项目根>/dist`，再由 `utils/app_paths.py` 的 `app_root()` 优先读取它。
+
+所以无论你是双击 `start.bat` 跑源码，还是双击 `dist/AutoClicker.exe`，读写的都是同一份
+`dist/config/config.json` 与 `dist/log/`：
+
+| 运行方式 | 配置 | 日志 |
+|----------|------|------|
+| `start.bat` / `script\run.bat` / `run.ps1` / `run.sh` | `dist/config/config.json` | `dist/log/app_YYYY-MM-DD.log` |
+| `dist/AutoClicker.exe` | `dist/config/config.json` | `dist/log/app_YYYY-MM-DD.log` |
+| `.venv\Scripts\python.exe main.py`（不设环境变量） | `config/config.json` | `log/app_YYYY-MM-DD.log` |
+
+要换数据目录，启动前设 `AUTOCLICKER_DATA_DIR` 指向任意目录即可，三种方式都遵循同一个优先级：
+环境变量 → 冻结运行取 exe 同级 → 源码运行取项目根。
+
+打包机需要 Python 3.10+ 与 PyInstaller；脚本会先探测 `.venv` 是否可用，缺失 PyInstaller 时会自动 `pip install`（用 `-SkipDeps` / `--no-deps` 可跳过）。构建日志在成功时只显示末尾几行，失败时完整日志保存到 `build/pyinstaller-error.log`。
+
+
+---
+
+## 项目结构
+
+```
+AutoClicker/
+├── core/
+│   ├── __init__.py
+│   ├── click_engine.py
+│   └── hotkey_listener.py
+├── script/
+│   ├── gen_readme.py
+│   ├── install.bat
+│   ├── install.ps1
+│   ├── install.sh
+│   ├── package.cmd
+│   ├── package.ps1
+│   ├── package.sh
+│   ├── README.template.md
+│   ├── run.bat
+│   ├── run.ps1
+│   └── run.sh
+├── ui/
+│   ├── __init__.py
+│   ├── action_editor.py
+│   ├── main_window.py
+│   ├── process_picker.py
+│   └── styles.py
+├── utils/
+│   ├── static/
+│   │   ├── Ralsei.ico
+│   │   ├── Ralsei.png
+│   │   └── Ralsei_Run.gif
+│   ├── __init__.py
+│   ├── app_paths.py
+│   ├── config_manager.py
+│   └── logger.py
+├── .gitignore
+├── main.py
+├── README.md
+├── requirements.txt
+└── start.bat
+```
+
+自动生成（首次运行时创建，均位于数据目录）：
+
+- `dist/config/config.json` — 配置文件，缺失时自动以默认值重建
+- `dist/log/app_YYYY-MM-DD.log` — 日志，按日期滚动
+
+> 直接跑 `.venv\Scripts\python.exe main.py`（不经启动脚本）时，这两个目录会落在项目根，而不是 `dist/`。
+
+### 代码规模
+
+共 **10** 个 Python 模块，**3273** 行代码（不含空行尾部）。
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `main.py` | 82 | 程序入口：创建 QApplication、装载主题、初始化日志与主窗口 |
+| `core/click_engine.py` | 764 | 核心引擎：Win32 输入模拟、窗口/进程枚举、连点循环调度 |
+| `core/hotkey_listener.py` | 137 | 全局热键注册与回调（依赖 keyboard 库） |
+| `ui/main_window.py` | 1153 | 主窗口：配置管理、动作表格、目标窗口、坐标拾取、热键、托盘、启停控制 |
+| `ui/action_editor.py` | 309 | 动作编辑对话框 + KeyCaptureEdit 按键捕获控件 |
+| `ui/process_picker.py` | 148 | 进程选择对话框 |
+| `ui/styles.py` | 358 | Catppuccin 深/浅色主题与系统暗色检测 |
+| `utils/app_paths.py` | 68 | 路径解析：统一源码运行与 PyInstaller 冻结运行下的目录定位 |
+| `utils/config_manager.py` | 127 | 配置读写、默认值合并、多配置管理 |
+| `utils/logger.py` | 127 | 日志初始化、全局/线程异常钩子 |
+
+---
+
+## 架构说明
+
+项目按三层拆分，**核心层不依赖 UI**，可单独复用：
+
+```
+┌─────────────────────────────────────────┐
+│  main.py          创建应用、装载主题      │
+├─────────────────────────────────────────┤
+│  ui/              界面层                  │
+│    main_window.py    主窗口（编排）       │
+│    action_editor.py  动作编辑对话框       │
+│    process_picker.py 进程选择对话框       │
+│    styles.py         主题样式表           │
+├─────────────────────────────────────────┤
+│  core/            核心层（无 UI 依赖）     │
+│    click_engine.py   Win32 输入 + 调度    │
+│    hotkey_listener.py 全局热键            │
+├─────────────────────────────────────────┤
+│  utils/           基础设施                │
+│    app_paths.py       源码/冻结路径解析   │
+│    config_manager.py  配置持久化          │
+│    logger.py          日志 + 异常钩子     │
+├─────────────────────────────────────────┤
+│  script/          构建与文档              │
+│    gen_readme.py      README 生成器       │
+│    README.template.md README 模板(占位符) │
+│    package.ps1/.cmd/.sh  三平台打包脚本   │
+└─────────────────────────────────────────┘
+```
+
+### 关键设计
+
+**1. Win32 调用集中在 `core/click_engine.py` 的模块级纯函数里**
+
+`is_window()` / `get_window_title()` / `get_client_size()` / `restore_window()` /
+`get_window_under_cursor()` / `is_mouse_button_down()` / `get_top_level_window()`
+都是无状态的纯函数，`ClickEngine` 只负责编排线程与循环。想单独测试某个 Win32 行为，不需要构造引擎对象。
+
+**2. 连点跑在独立线程里，UI 通过回调更新**
+
+`ClickEngine.start()` 起一个 `threading.Thread` 跑 `_run_loop`，每执行一个动作就通过
+`_action_callback(index)` 通知 UI；UI 侧用 `QTimer.singleShot(0, ...)` 把回调弹回主线程，
+避免跨线程直接操作控件。
+
+**3. 相对坐标而非绝对像素**
+
+`click_x` / `click_y` 存 0.0–1.0 的比例。后台点击时用 `get_client_size(hwnd)` 换算成
+当前客户区像素坐标再交给 `PostMessage`，窗口挪位置也不会点偏。
+
+**4. 「一直按」的 hold 语义**
+
+`mode == "hold"` 且 `hold_duration <= 0` 时，动作会按下但不松开，并被记入 `held_indices`
+跳过后续重复执行；直到停止时才由 `_release_held_keys()` 统一释放。适合需要持续按住
+某键的场景（游戏里连续前进等）。
+
+**5. 可滚动的内容区，窗口缩放时控件不会互相挤压**
+
+界面最外层是「可滚动内容区 + 常驻底部控制栏」两段式布局：
+
+- 内容（配置、动作表、连点参数、目标窗口、热键）整体放进 `QScrollArea`
+  （objectName `contentScroll`），里面的 `contentPane` 设了 `minimumWidth`，
+  控件因此**永远不会被压到低于自身最小尺寸**；
+- 「▶ 开始连点 / ■ 停止」两个主按钮放在滚动区外的常驻底栏（objectName `footerBar`），
+  窗口拉得再矮也够得到，不用先滚到底；
+- 各分组用 `QGridLayout` 分行排列（早期是一条 `QHBoxLayout` 长龙，宽度不够时
+  Qt 只能让相邻控件重叠，表现为按钮互相压）。分组最小宽度实测：
+  配置文件 484 / 动作序列 379 / 连点参数 440 / 目标窗口 416 / 热键 320。
+- 窗口最小尺寸 560×460，初始尺寸按内容高度自动决定（内容区最小高约 838px，
+  屏幕放得下就一次展开到 900×928，放不下就取可用区域 90%，其余交给纵向滚动条）。
+
+---
 
 ## 使用说明
 
-1. **添加动作**：点击"添加动作"按钮，选择动作类型（鼠标/键盘/组合键），设置按钮或按键、点击模式
-2. **前台/后台模式**：
-   - 前台模式：直接在当前光标位置执行点击
-   - 后台模式：选择目标窗口后，对指定窗口发送后台点击消息
-3. **选择目标窗口**：
-   - 下拉框支持关键字搜索（匹配窗口标题和进程名）
-   - 点击"进程"按钮从进程列表中选择
-   - 点击"拾取"按钮后鼠标点击目标窗口自动选中
-4. **启动/停止**：点击"开始"按钮或使用全局热键
-5. **托盘最小化**：关闭窗口时最小化到系统托盘，右键托盘图标可退出
+### 1. 编排动作序列
+
+点「+ 添加动作」打开编辑器，选类型后填写参数。表格列出所有动作，**按从上到下的顺序执行**：
+
+| 列 | 含义 |
+|----|------|
+| # | 执行序号 |
+| 类型 | 鼠标 / 键盘 / 组合键 |
+| 按钮/按键 | 具体按钮或按键名 |
+| 模式 | 单击 / 长按（一直按时显示「一直按」） |
+| 参数 | 长按时长或动作后延迟 |
+
+用「上移 / 下移」调整顺序，「编辑」「删除」修改。
+
+### 2. 设置连点参数
+
+| 参数 | 范围 | 说明 |
+|------|------|------|
+| 循环间隔 | 0–100000 ms | 每轮动作序列之间的间隔，**0 = 极限速度** |
+| 重复次数 | 0–999999 | 0 = 无限循环 |
+| 循环间额外延迟 | 0–100000 ms | 与循环间隔叠加，用于更粗的节奏控制 |
+
+### 3. 选择目标窗口（后台模式）
+
+1. 「模式」切到 **后台模式 (PostMessage)**
+2. 「目标窗口」下拉框输入关键字筛选，或点「📋 进程」浏览，或点「🎯 拾取坐标」直接点目标窗口
+3. 用 X / Y 微调点击位置（相对客户区的百分比），下方会实时显示换算后的像素值
+
+### 4. 设置热键
+
+在「热键设置」的两个输入框里点击，然后直接按下想要的键，会显示键名。点「应用热键」生效。
+热键在窗口最小化或失焦时依然有效（**需管理员权限**）。
+
+### 5. 开始 / 停止
+
+点「▶ 开始连点」或用启动热键。运行时顶部会显示 Ralsei 跑步动画和当前执行状态。
+
+### 6. 托盘
+
+程序启动时即创建系统托盘图标（不是开关项）：双击图标恢复窗口，右键菜单可显示窗口或退出。
+
+关闭主窗口时的行为由配置文件里的 `settings.minimize_to_tray` 决定：
+
+- `false`（默认）：**直接退出**，停止连点并注销热键
+- `true`：隐藏到托盘继续后台运行
+
+> ⚠️ 这个选项目前**没有界面开关**，需要手动编辑数据目录下的 `config.json`（经启动脚本运行时是 `dist/config/config.json`）。
+
+---
+
+## 动作类型详解
+
+### 鼠标点击
+
+```json
+{
+  "type": "mouse",
+  "button": "left",
+  "mode": "click",
+  "delay_after": 0.001
+}
+```
+
+`button` 可选：`left` / `right` / `middle` / `x1` / `x2`。
+前台模式走 `SendInput` 的 `MOUSEEVENTF_*`，后台模式走 `WM_LBUTTONDOWN/UP` 系列消息（X 键额外带 `mouseData`）。
+
+### 键盘按键
+
+```json
+{
+  "type": "keyboard",
+  "button": "F5",
+  "mode": "click",
+  "delay_after": 0.0
+}
+```
+
+按键名经 `VK_MAP` 查表转虚拟键码，支持 `a`–`z`、`0`–`9`、`F1`–`F16`、`Space`、`Enter`、
+`Tab`、`Escape`、`Delete`、方向键、`Num0`–`Num9`、`Oem*` 系列等。
+
+### 组合键
+
+```json
+{
+  "type": "combo",
+  "vk_list": ["ctrl", "shift", "s"],
+  "mode": "click",
+  "delay_after": 0.0
+}
+```
+
+按顺序逐个按下，结束后**逆序释放**，保证修饰键状态正确。
+
+### 长按 / 一直按
+
+```json
+{
+  "type": "mouse",
+  "button": "left",
+  "mode": "hold",
+  "hold_duration": 0
+}
+```
+
+`hold_duration > 0`：按住指定秒数后自动松开。
+`hold_duration == 0`：**一直按住**，直到点击「停止」才释放，且该动作在后续循环中被跳过。
+
+---
 
 ## 配置说明
 
-配置文件位于 `config/config.json`，程序运行时自动创建和更新。支持多配置切换，每个配置独立保存动作列表、目标窗口、热键等设置。
+配置存放于数据目录下的 `config/config.json`（经启动脚本或 exe 运行时是 `dist/config/config.json`），程序运行时会自动创建和更新。完整结构：
 
-## 日志
+```json
+{
+  "profiles": [
+    {
+      "name": "配置名",
+      "actions": [
+        { "type": "mouse", "button": "left", "mode": "click", "delay_after": 0.0 }
+      ],
+      "interval": 2,
+      "repeat": 0,
+      "loop_delay": 0,
+      "start_hotkey": "F6",
+      "stop_hotkey": "F7",
+      "enabled": true,
+      "target_mode": "background",
+      "target_title": "目标窗口标题",
+      "click_x": 0.279,
+      "click_y": 0.478
+    }
+  ],
+  "active_profile": 0,
+  "settings": {
+    "minimize_to_tray": false,
+    "start_minimized": false,
+    "high_precision": true,
+    "theme": "dark"
+  }
+}
+```
 
-程序运行日志自动写入 `log/` 目录，按日期命名（`app_YYYY-MM-DD.log`）。未捕获的异常会通过全局异常钩子自动记录，包含完整的堆栈信息。
+### 字段说明
 
-## 许可
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `profiles[].name` | string | 配置名 |
+| `profiles[].actions` | array | 动作序列，按数组顺序执行 |
+| `profiles[].interval` | int | 循环间隔（ms），0 = 最快 |
+| `profiles[].repeat` | int | 重复次数，0 = 无限 |
+| `profiles[].loop_delay` | int | 循环间额外延迟（ms） |
+| `profiles[].start_hotkey` | string | 启动热键，如 `F6`、`ctrl+F1` |
+| `profiles[].stop_hotkey` | string | 停止热键 |
+| `profiles[].target_mode` | string | `foreground` 或 `background` |
+| `profiles[].target_title` | string | 目标窗口标题（用于重连时查找） |
+| `profiles[].click_x` / `click_y` | float | 相对客户区的点击位置，0.0–1.0 |
+| `profiles[].enabled` | bool | **已定义但当前版本未读取**（无启用/禁用功能），保留供后续扩展 |
+| `active_profile` | int | 当前激活配置的索引 |
+| `settings.theme` | string | `dark` / `light` / `auto` |
+| `settings.minimize_to_tray` | bool | 关闭窗口时是否最小化到托盘（**无界面开关**） |
+| `settings.start_minimized` | bool | **已定义但从未被读取**（启动即最小化未实现） |
+| `settings.high_precision` | bool | **已定义但从未被读取**（精细计时始终启用） |
+
+> 💡 配置里如果出现 `target_hwnd` 字段，那是运行时缓存的窗口句柄，**每次开机都会变**，程序会校验有效性并自动回退到按标题查找。手改配置时可以直接删掉它。
+
+### 手动编辑
+
+可以直接编辑 JSON（程序关闭时），或删除整个文件让程序以默认值重建。
+
+---
+
+## 故障排查
+
+### 程序起不来 / 提示找不到 Python
+
+`.venv` 的 `pyvenv.cfg` 记录了创建它的基础解释器路径（`home = ...`）。**如果那个 Python 被卸载或移动**，
+虚拟环境里的 `python.exe` 就只是个失效的存根，会报：
+
+```
+did not find executable at 'C:\PythonXXX\python.exe'
+```
+
+同时 `script\run.*`、`start.bat` 全部失效，因为它们都硬编码了 `.venv\Scripts\python.exe`。
+
+**解决**：删掉整个 `.venv` 目录，重新跑 `script\install.bat`（或按下文手建）。
+
+```bat
+rmdir /s /q .venv
+script\install.bat
+```
+
+### 热键按了没反应
+
+1. **是否以管理员身份运行？** `keyboard` 库注册全局热键必须有管理员权限，否则静默失败
+2. 热键是否被其它程序占用（如录屏软件、游戏加速器）
+3. 点「应用热键」后是否看到键名正确显示
+
+### 后台点击没反应
+
+1. 确认目标窗口句柄有效（点「刷新」重新选择）
+2. 目标窗口最小化时，部分程序不处理投递的消息 —— 尝试先还原窗口
+3. **某些程序（尤其是游戏）只接受真实硬件输入**，会主动丢弃 `PostMessage` 消息。这类程序必须用前台模式
+4. 部分网页控件依赖鼠标移动事件更新 hover 状态，纯点击消息可能不触发响应
+
+### 点击位置偏了
+
+- 确认 X / Y 是**相对客户区的百分比**，不是屏幕绝对坐标
+- 高分屏（125% / 150% 缩放）下，最小化窗口的客户区尺寸是估算值，可能有个位数像素偏差 —— 尽量在窗口正常显示时拾取坐标
+
+### 全局异常看不到
+
+日志在数据目录下的 `log/app_YYYY-MM-DD.log`（经启动脚本或 exe 运行时是 `dist/log/`）。
+主线程异常由 `sys.excepthook` 记录，工作线程（连点引擎、热键）异常由 `threading.excepthook`
+记录，日志行前缀为 `[THREAD:线程名]`。
+
+---
+
+## 已知问题
+
+以下是当前版本已知的、尚未修复的问题，供二次开发参考：
+
+| 严重度 | 问题 | 位置 |
+|--------|------|------|
+| 中 | 后台模式只发 `WM_LBUTTONDOWN/UP`，不发 `WM_MOUSEMOVE`，依赖 hover 状态的控件可能无响应 | `core/click_engine.py` `_post_mouse` |
+| 中 | 后台键盘只发 `WM_KEYDOWN/KEYUP`，不发 `WM_CHAR`，输入框类控件不会产生字符 | `core/click_engine.py` `_post_keyboard` |
+| 中 | 进程列表按**进程名**去重，Chrome/Edge 这类多进程应用只显示第一个 PID 的窗口 | `core/click_engine.py` `get_process_window_list` |
+| 中 | 最小化窗口的客户区尺寸靠硬编码减 16px/46px 估算，高 DPI 下会偏 | `core/click_engine.py` `get_client_size` |
+| 低 | `SendInput` 返回值从不检查，被 UIPI 拦截时静默失败 | `core/click_engine.py` `_send_mouse` / `_send_keyboard` |
+| 低 | `settings.start_minimized` 与 `settings.high_precision` 已定义但**从未被读取** | `utils/config_manager.py` |
+| 低 | `HotkeyListener.capture_key()` 未被调用（UI 用 `KeyCaptureEdit` 自行实现） | `core/hotkey_listener.py` |
+| 低 | 主题只在启动时读取，运行中切换系统主题不生效 | `ui/styles.py` |
+
+> 已修复：`target_hwnd` 会污染配置文件（现在 `_auto_save_profile()` 保存前会 `pop` 掉它）；
+> 工作线程崩溃不入日志（现在挂了 `threading.excepthook`）。
+
+---
+
+## 开发说明
+
+### 修改主题
+
+主题色集中定义在 `ui/styles.py` 顶部两个字典 `_DARK` / `_LIGHT` 里，
+`_build_style(color_dict)` 会把它们套进 QSS 模板。加新控件时同步给两个字典补色即可。
+
+### 添加新的按键映射
+
+在 `core/click_engine.py` 的 `VK_MAP` 字典里加 `"键名": 虚拟键码`。
+虚拟键码查[微软官方文档](https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes)。
+
+### 添加新动作类型
+
+1. `ui/action_editor.py`：在 `type_combo` 加一项，`QStackedWidget` 加一页，`_on_ok` 里补分支
+2. `core/click_engine.py`：`_execute_action` 里补 `action_type` 分支
+3. `ui/main_window.py`：`_refresh_action_table` 里补类型的中文显示名
+
+### 代码风格
+
+- Win32 常量用全大写并附注释说明取值来源
+- ctypes 结构体字段名保持与 MSDN 一致，方便对照文档
+- 任何跨线程的 UI 更新必须经过信号或 `QTimer.singleShot`
+
+> 最近提交：`a295df7 (2026-07-31) first commit`
+
+---
+
+## 许可证
 
 本项目仅供学习和个人使用。
+
+---
+
+*本文档由 `script/package.ps1` / `package.sh` / `package.cmd` 任一脚本生成于 2026-11-21，版本 1.0.0。*
+*手工修改会被下次打包覆盖 —— 请改 `script/README.template.md`。*
