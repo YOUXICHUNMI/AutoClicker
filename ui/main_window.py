@@ -36,6 +36,10 @@ logger = setup_logger("ui")
 
 # 自定义 item data role：存储原始窗口标题（不含进程名后缀）
 TITLE_ROLE = Qt.ItemDataRole.UserRole + 1
+# 列表项里存"进程可执行文件名"（例如 chrome.exe）的 role。
+# 光靠标题恢复目标窗口不可靠：浏览器切页面、记事本换文件都会改标题，
+# 进程名则在程序重启后依然一致。
+EXE_ROLE = Qt.ItemDataRole.UserRole + 2
 
 
 class MainWindow(QMainWindow):
@@ -755,8 +759,13 @@ class MainWindow(QMainWindow):
                 raw_title = self.window_combo.itemData(
                     self.window_combo.currentIndex(), TITLE_ROLE)
                 prof["target_title"] = raw_title or self.window_combo.currentText()
+                # 进程名一起存：标题会变（浏览器切页面、记事本换文件、
+                # 目标程序重启），进程名不会。恢复顺序见 _select_window_by_hint()
+                prof["target_exe"] = self.window_combo.itemData(
+                    self.window_combo.currentIndex(), EXE_ROLE) or ""
             else:
                 prof["target_title"] = ""
+                prof["target_exe"] = ""
             # 保存点击坐标比例
             prof["click_x"] = round(self.click_x_spin.value() / 100.0, 4)
             prof["click_y"] = round(self.click_y_spin.value() / 100.0, 4)
@@ -780,30 +789,73 @@ class MainWindow(QMainWindow):
         self.click_y_spin.setEnabled(is_bg)
         self.pick_btn.setEnabled(is_bg)
         if is_bg:
+            # refreshWindows 内部已经会按当前选中/配置里的 title+exe 找回目标，
+            # 所以这里不再重复一遍匹配逻辑
             self._refresh_windows()
-            # 尝试恢复之前选择的目标窗口
-            prof = self._get_active_profile()
-            if prof:
-                saved_title = prof.get("target_title", "")
-                if saved_title:
-                    # 优先用 TITLE_ROLE 精确匹配原始标题
-                    for i in range(self.window_combo.count()):
-                        if self.window_combo.itemData(i, TITLE_ROLE) == saved_title:
-                            self.window_combo.setCurrentIndex(i)
-                            break
-                    else:
-                        # fallback: 显示文本包含匹配
-                        i = self.window_combo.findText(saved_title, Qt.MatchFlag.MatchContains)
-                        if i >= 0:
-                            self.window_combo.setCurrentIndex(i)
             self._update_pixel_display()
         else:
             self.pixel_label.setText("")
         if not self._building_ui:
             self._auto_save_profile()
 
+    def _select_window_by_hint(self, title, exe):
+        """在窗口下拉框里按「进程名 + 标题」找回上次选中的目标。
+
+        恢复顺序（越靠前越可信）：
+          1. 进程名与标题都相同 —— 程序没重启，只是重进了界面
+          2. 进程名相同         —— 程序重启过，标题变了
+          3. 标题完全相同       —— 老配置没有 target_exe，兼容用
+          4. 标题包含           —— 标题带了状态后缀
+
+        返回是否成功选中。
+        """
+        title = (title or "").strip()
+        exe = (exe or "").strip()
+        if not title and not exe:
+            return False
+        n = self.window_combo.count()
+        if n <= 0:
+            return False
+
+        prev = self._building_ui
+        self._building_ui = True
+        try:
+            # 1 + 3：标题精确匹配（顺带满足「进程名+标题都相同」这一最优情况）
+            for i in range(n):
+                if title and self.window_combo.itemData(i, TITLE_ROLE) == title:
+                    self.window_combo.setCurrentIndex(i)
+                    return True
+            # 2：只按进程名（标题变了也能找回来）
+            if exe:
+                for i in range(n):
+                    if (self.window_combo.itemData(i, EXE_ROLE) or "").lower() == exe.lower():
+                        self.window_combo.setCurrentIndex(i)
+                        return True
+            # 4：标题包含
+            if title:
+                i = self.window_combo.findText(title, Qt.MatchFlag.MatchContains)
+                if i >= 0:
+                    self.window_combo.setCurrentIndex(i)
+                    return True
+            return False
+        finally:
+            self._building_ui = prev
+
     def _refresh_windows(self):
         """刷新可用窗口列表（包含最小化的窗口），显示标题和进程名"""
+        # 刷新会清空列表，先记住当前选中的窗口
+        saved_title = ""
+        saved_exe = ""
+        if self.window_combo.currentIndex() >= 0:
+            saved_title = self.window_combo.itemData(
+                self.window_combo.currentIndex(), TITLE_ROLE) or ""
+            saved_exe = self.window_combo.itemData(
+                self.window_combo.currentIndex(), EXE_ROLE) or ""
+        if not saved_title and not saved_exe:
+            prof = self._get_active_profile()
+            if prof:
+                saved_title = prof.get("target_title", "")
+                saved_exe = prof.get("target_exe", "")
         self.window_combo.clear()
         try:
             windows = enum_windows_detail()
@@ -813,10 +865,14 @@ class MainWindow(QMainWindow):
                 idx = self.window_combo.count() - 1
                 self.window_combo.setItemData(idx, hwnd)                        # UserRole: HWND
                 self.window_combo.setItemData(idx, title, TITLE_ROLE)           # 原始标题
+                self.window_combo.setItemData(idx, proc, EXE_ROLE)              # 进程名
             logger.info(f"窗口列表已刷新，共 {len(windows)} 个窗口")
         except Exception as e:
             log_exception(logger, e, "刷新窗口列表失败")
             self.statusBar().showMessage(f"刷新窗口失败: {e}")
+            return
+        # 刷新完把上次选中的窗口找回来
+        self._select_window_by_hint(saved_title, saved_exe)
 
     def _on_window_search_enter(self):
         """用户在搜索框按回车：选中第一个匹配项"""
@@ -856,6 +912,7 @@ class MainWindow(QMainWindow):
                         idx = self.window_combo.count() - 1
                         self.window_combo.setItemData(idx, hwnd)
                         self.window_combo.setItemData(idx, title, TITLE_ROLE)
+                        self.window_combo.setItemData(idx, proc, EXE_ROLE)
                         found = idx
                     if found >= 0:
                         self.window_combo.setCurrentIndex(found)
@@ -974,6 +1031,7 @@ class MainWindow(QMainWindow):
                                 idx = self.window_combo.count() - 1
                                 self.window_combo.setItemData(idx, hwnd)
                                 self.window_combo.setItemData(idx, title, TITLE_ROLE)
+                                self.window_combo.setItemData(idx, proc, EXE_ROLE)
                                 found = idx
                             if found >= 0:
                                 self.window_combo.setCurrentIndex(found)
@@ -1035,6 +1093,15 @@ class MainWindow(QMainWindow):
                     title = prof.get("target_title", "")
                     if title:
                         hwnd = find_window_by_title(title)
+                # 标题找不回来（目标程序重启过、或标题变了）时按进程名兜底，
+                # 这样「上次连的是哪个程序」在重进之后依然有效。
+                if not hwnd:
+                    exe = (prof.get("target_exe") or "").strip().lower()
+                    if exe:
+                        for win_hwnd, _win_title, win_proc in enum_windows_detail():
+                            if (win_proc or "").lower() == exe:
+                                hwnd = win_hwnd
+                                break
                 if not hwnd:
                     title = prof.get("target_title", "")
                     QMessageBox.warning(self, "提示",

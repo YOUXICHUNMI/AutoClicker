@@ -33,6 +33,10 @@ DEFAULT_CONFIG = {
             "enabled": True,
             "target_mode": "foreground",  # foreground | background
             "target_title": "",           # 后台模式目标窗口标题
+            # 目标进程可执行文件名（如 chrome.exe）。为什么要连进程名一起存：
+            # 窗口标题会变（浏览器切页面、记事本换文件、目标程序重启），
+            # 进程名不会。恢复顺序见 MainWindow._select_window_by_hint()
+            "target_exe": "",
             "click_x": 0.5,               # 后台点击 X 比例 (0.0~1.0)
             "click_y": 0.5                # 后台点击 Y 比例 (0.0~1.0)
         }
@@ -59,7 +63,11 @@ class ConfigManager:
         """从磁盘加载配置，文件不存在时自动创建默认配置"""
         try:
             if os.path.exists(CONFIG_FILE):
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                # 用 utf-8-sig 而不是 utf-8：Windows 记事本、PowerShell 的
+                # Out-File -Encoding utf8 都会给文件加 BOM，用 utf-8 读会抛
+                # "Unexpected UTF-8 BOM"，整个配置被丢弃回默认值。
+                # 用户手改一下配置就丢全部设置，是很难受的体验。
+                with open(CONFIG_FILE, "r", encoding="utf-8-sig") as f:
                     loaded = json.load(f)
                 # 合并：以加载值为准，但保证默认键存在
                 self._merge(loaded)

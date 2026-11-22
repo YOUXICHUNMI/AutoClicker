@@ -403,19 +403,19 @@ AutoClicker/
 
 ### 代码规模
 
-共 **10** 个 Python 模块，**3489** 行代码（不含空行尾部）。
+共 **10** 个 Python 模块，**3564** 行代码（不含空行尾部）。
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
 | `main.py` | 92 | 程序入口：创建 QApplication、装载主题、初始化日志与主窗口 |
 | `core/click_engine.py` | 909 | 核心引擎：Win32 输入模拟、窗口/进程枚举、连点循环调度 |
 | `core/hotkey_listener.py` | 149 | 全局热键注册与回调（依赖 keyboard 库） |
-| `ui/main_window.py` | 1180 | 主窗口：配置管理、动作表格、目标窗口、坐标拾取、热键、托盘、启停控制 |
+| `ui/main_window.py` | 1247 | 主窗口：配置管理、动作表格、目标窗口、坐标拾取、热键、托盘、启停控制 |
 | `ui/action_editor.py` | 309 | 动作编辑对话框 + KeyCaptureEdit 按键捕获控件 |
 | `ui/process_picker.py` | 148 | 进程选择对话框 |
 | `ui/styles.py` | 380 | Catppuccin 深/浅色主题与系统暗色检测 |
 | `utils/app_paths.py` | 68 | 路径解析：统一源码运行与 PyInstaller 冻结运行下的目录定位 |
-| `utils/config_manager.py` | 127 | 配置读写、默认值合并、多配置管理 |
+| `utils/config_manager.py` | 135 | 配置读写、默认值合并、多配置管理 |
 | `utils/logger.py` | 127 | 日志初始化、全局/线程异常钩子 |
 
 ---
@@ -790,7 +790,7 @@ script\install.bat
 - ctypes 结构体字段名保持与 MSDN 一致，方便对照文档
 - 任何跨线程的 UI 更新必须经过信号或 `QTimer.singleShot`
 
-> 最近提交：`a3942a3 (2026-11-21) feat: 打包脚本同时产出单文件与绿色目录两种形态，新增 GitHub Actions 自动打包`
+> 最近提交：`0912e05 (2026-11-21) feat: exe 补版本信息（PyInstaller --version-file），与 Qt 版对齐`
 
 ---
 
@@ -800,5 +800,5 @@ script\install.bat
 
 ---
 
-*本文档由 `script/package.ps1` / `package.sh` / `package.cmd` 任一脚本生成于 2026-11-21，版本 1.0.0。*
+*本文档由 `script/package.ps1` / `package.sh` / `package.cmd` 任一脚本生成于 2026-11-22，版本 1.0.0。*
 *手工修改会被下次打包覆盖 —— 请改 `script/README.template.md`。*
