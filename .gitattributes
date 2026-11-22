@@ -1,44 +1,27 @@
-# ============================================================
-#  换行符与文件模式策略
-# ============================================================
-#  目的：仓库在任何平台检出后行为一致，Windows 与 Linux/macOS 之间
-#  不会因为换行符被 git 自动改写而互相污染。
-#
-#  - 源码 / 文档 / shell 脚本：仓库内和工作区都用 LF
-#  - Windows 专用脚本（.bat/.cmd/.ps1）：仓库内用 LF 存，检出时强制 CRLF
-#    cmd.exe 执行纯 LF 的批处理会出错；PowerShell 5.1 读 LF 文件里的
-#    中文在部分场景下也会错位
-#  - 图片、图标、二进制：禁止任何转换
-#
-#  注意：本文件里显式写出的规则优先级高于 core.autocrlf，
-#  所以即使本机 core.autocrlf=true，检出结果也以这里为准。
-
+# 换行与编码按文件类型统一，避免 Windows 检出 / Linux 检出的差异
 * text=auto eol=lf
 
-# --- 源码与文档：LF ---
-*.py             text eol=lf
-*.md             text eol=lf
-*.txt            text eol=lf
-*.json           text eol=lf
-*.toml           text eol=lf
-*.cfg            text eol=lf
-*.yml            text eol=lf
-*.yaml           text eol=lf
-*.sh             text eol=lf
-.gitignore       text eol=lf
-.gitattributes   text eol=lf
+*.cpp    text eol=lf
+*.h      text eol=lf
+*.md     text eol=lf
+*.txt    text eol=lf
+*.json   text eol=lf
+*.qrc    text eol=lf
+*.sh     text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
 
-# --- Windows 专用脚本：检出为 CRLF ---
-*.bat            text eol=crlf
-*.cmd            text eol=crlf
-*.ps1            text eol=crlf
+# PowerShell 脚本必须 CRLF + UTF-8 BOM，否则 PowerShell 5.1 按 GBK 解码中文
+*.ps1    text eol=crlf
+# 批处理必须 CRLF + GBK
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
 
-# --- 二进制：原样存取 ---
-*.png            binary
-*.gif            binary
-*.ico            binary
-*.jpg            binary
-*.jpeg           binary
-*.exe            binary
-*.zip            binary
-*.tar.gz         binary
+# 二进制
+*.png    binary
+*.gif    binary
+*.ico    binary
+*.exe    binary
+*.dll    binary
+*.zip    binary
+*.tar.gz binary

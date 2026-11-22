@@ -1,618 +1,802 @@
-#!/usr/bin/env bash
-# ============================================================
-#  AutoClicker 打包脚本 (bash)
+#!/bin/bash
+# AutoClicker 打包脚本（Linux / macOS / MSYS2）
 #
-#  - 调用 script/gen_readme.py 生成 README.md（行数/目录树/git 版本）
-#  - Windows 上（Git Bash / MSYS2）：用 PyInstaller 打两种形态（默认都打）
-#      dist/AutoClicker.exe                                单文件 exe（--onefile）
-#      dist/AutoClicker_v<版本>_<日期>_single_win64.exe    同一文件的带版本号副本
-#      dist/AutoClicker_v<版本>_<日期>_win64.zip           绿色目录 zip（--onedir）
-#  - 非 Windows：只能打源码归档（PyInstaller 不能跨平台交叉编译）
+# 用途：编译 Release 版本并按格式命名产出两种形态。
+#       Windows(MSYS2) 下默认两种都产：
+#         dist/AutoClicker.exe                                单文件 exe
+#         dist/AutoClicker_v<版本>_<日期>_single_win64.exe    同一文件的带版本号副本
+#         dist/AutoClicker_v<版本>_<日期>_win64.zip           绿色目录 zip
+#       非 Windows 平台只能编译（连点依赖 Win32 API，运行无功能），产物只用来验证能编过。
 #
-#  用法:
-#    ./script/package.sh
-#    ./script/package.sh --check-only     # 只检测 dist/ 产物是否最新，不打
-#    ./script/package.sh --force          # 产物已最新也强制重新打包
-#    ./script/package.sh --version 1.1.0
-#    ./script/package.sh --skip-single    # 只打绿色目录 zip
-#    ./script/package.sh --skip-green     # 只打单文件 exe
-#    ./script/package.sh --no-exe         # 两种都不打，只做别的
-#    ./script/package.sh --with-source    # Windows 上额外再打一份源码归档
-#    ./script/package.sh --no-zip
-#    ./script/package.sh --no-readme
-#    ./script/package.sh --no-deps
-#
-#  注意:
-#    Windows 上请用 Git Bash 或 MSYS2 的 bash，不要用 C:\Windows\System32\bash.exe
-#    （那是 WSL 入口，对本机路径与代理的处理不一样，容易出问题）。
-# ============================================================
+# 用法：
+#   ./script/package.sh                     # 默认：编译 + 两种形态都产
+#   ./script/package.sh --single-exe        # 只产单文件 exe（需 Enigma Virtual Box）
+#   ./script/package.sh --skip-single       # 只产绿色目录 zip
+#   ./script/package.sh --with-source       # 额外打一份源码归档
+#   ./script/package.sh --no-exe            # 只编译，不收集依赖
+#   ./script/package.sh --no-build          # 跳过编译，直接用现有产物
+#   ./script/package.sh --version 1.2.0     # 指定版本号
+#   ./script/package.sh --check-only        # 只检测，不打包（exit 0=最新 / 2=过期）
+#   ./script/package.sh --force             # 产物最新也强制重打
+#   ./script/package.sh --help
+
 set -euo pipefail
 
-# ---------- 路径 ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$PROJECT_DIR"
 
-# ---------- 默认参数 ----------
 VERSION="1.0.0"
-BUILD_EXE=1      # 默认打程序（非 Windows 平台会自动跳过）
-SKIP_SINGLE=0    # --skip-single：只打绿色目录
-SKIP_GREEN=0     # --skip-green：只打单文件 exe
-DO_ZIP=0        # 源码归档只在 --with-source 时打
-DO_README=1
-DO_DEPS=1
+DO_BUILD=1
+DO_ZIP=0        # 源码归档只在 --with-source 时产出
 CHECK_ONLY=0
 FORCE=0
+BUILD_EXE=1     # 默认就走编译 + 收集依赖这条主路径
 WITH_SOURCE=0
+# 两种形态默认都产。-SingleExe / --single-exe 只产单文件，--skip-single 只产绿色目录。
+WANT_GREEN=1
+WANT_SINGLE=1
 
-# ---------- 排除规则 ----------
-EXCLUDE_DIRS=(
-  ".venv" "venv" "__pycache__" ".git" "dist" "build"
-  ".idea" ".vscode" "log" ".pytest_cache" ".mypy_cache"
-)
-EXCLUDE_FILE_PATTERNS=(
-  "*.pyc" "*.pyo" "*.pyd" "*.log" ".DS_Store" "Thumbs.db"
-)
-# 仅打包时排除: config/config.json 含本机窗口标题/句柄，程序首次运行会自动重建
-ZIP_ONLY_EXCLUDE_FILES=("config.json")
-
-# ---------- 颜色 ----------
-if [ -t 1 ]; then
-  C_STEP=$'\033[33m'; C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_ERR=$'\033[31m'; C_DIM=$'\033[90m'; C_OFF=$'\033[0m'
-else
-  C_STEP=''; C_OK=''; C_WARN=''; C_ERR=''; C_DIM=''; C_OFF=''
-fi
-step() { printf '%s%s%s\n' "$C_STEP" "$*" "$C_OFF"; }
-ok()   { printf '%s%s%s\n' "$C_OK"   "$*" "$C_OFF"; }
-warn() { printf '%s%s%s\n' "$C_WARN" "$*" "$C_OFF"; }
-err()  { printf '%s%s%s\n' "$C_ERR"  "$*" "$C_OFF" >&2; }
-
+# ------------------------------------------------------------------ 参数解析
 usage() {
-  # 只打印文件头注释块（第 2 行到 "set -euo" 之前），不要把代码行一起打出来
-  awk 'NR>1 { if ($0 !~ /^#/) exit; print }' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-  exit "${1:-0}"
+    awk 'NR>1 { if ($0 !~ /^#/) exit; print }' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
-# ---------- 参数解析 ----------
 while [ $# -gt 0 ]; do
-  case "$1" in
-    -v|--version)   VERSION="${2:?--version 需要一个值}"; shift 2 ;;
-    -v=*|--version=*) VERSION="${1#*=}"; shift ;;
-    -e|--build-exe) BUILD_EXE=1; shift ;;
-    --no-exe)       BUILD_EXE=0; shift ;;
-    --skip-single)  SKIP_SINGLE=1; shift ;;
-    --skip-green)   SKIP_GREEN=1; shift ;;
-    --with-source)  WITH_SOURCE=1; DO_ZIP=1; shift ;;
-    --no-zip)       DO_ZIP=0; shift ;;
-    --no-readme)    DO_README=0; shift ;;
-    --no-deps)      DO_DEPS=0; shift ;;
-    --check-only)   CHECK_ONLY=1; shift ;;
-    -f|--force)     FORCE=1; shift ;;
-    -h|--help)      usage 0 ;;
-    *)              err "未知参数: $1"; usage 1 ;;
-  esac
+    case "$1" in
+        -v|--version)     VERSION="$2"; shift 2 ;;
+        --no-build)       DO_BUILD=0; shift ;;
+        --no-zip)         DO_ZIP=0; shift ;;
+        --no-exe)         BUILD_EXE=0; shift ;;
+        --with-source)    WITH_SOURCE=1; DO_ZIP=1; shift ;;
+        --single-exe)     WANT_GREEN=0; WANT_SINGLE=1; shift ;;
+        --skip-single)    WANT_GREEN=1; WANT_SINGLE=0; shift ;;
+        --check-only)     CHECK_ONLY=1; shift ;;
+        -e|--build-exe)   BUILD_EXE=1; shift ;;
+        -f|--force)       FORCE=1; shift ;;
+        -h|--help)        usage; exit 0 ;;
+        *) echo "未知参数: $1（用 --help 查看用法）" >&2; exit 1 ;;
+    esac
 done
 
-# ---------- 判定平台 ----------
-case "$(uname -s 2>/dev/null || echo unknown)" in
-  MINGW*|MSYS*|CYGWIN*) PLATFORM="windows" ;;
-  Darwin)               PLATFORM="darwin"  ;;
-  Linux)                PLATFORM="linux"   ;;
-  *)                    PLATFORM="unknown" ;;
+# ------------------------------------------------------------------ 平台判定
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) PLATFORM="windows" ;;
+    Darwin)               PLATFORM="darwin" ;;
+    Linux)                PLATFORM="linux" ;;
+    *)                    PLATFORM="unknown" ;;
 esac
 
-# ---------- 定位 Python ----------
-is_python3() {
-  [ -n "${1:-}" ] && [ -x "$1" ] && "$1" -c 'import sys; sys.exit(0 if sys.version_info[0]==3 else 1)' 2>/dev/null
+# ------------------------------------------------------------------ 颜色
+if [ -t 1 ]; then
+    C_STEP='\033[36m'; C_OK='\033[32m'; C_WARN='\033[33m'
+    C_ERR='\033[31m';  C_DIM='\033[90m'; C_OFF='\033[0m'
+else
+    C_STEP=''; C_OK=''; C_WARN=''; C_ERR=''; C_DIM=''; C_OFF=''
+fi
+
+step()  { printf '\n%s=== %s ===%s\n' "$C_STEP" "$1" "$C_OFF"; }
+ok()    { printf '  %s[OK]%s %s\n'   "$C_OK"   "$C_OFF" "$1"; }
+info()  { printf '  %s%s%s\n'        "$C_DIM"  "$1"     "$C_OFF"; }
+warn()  { printf '  %s[!]%s %s\n'    "$C_WARN" "$C_OFF" "$1"; }
+err()   { printf '  %s[x]%s %s\n'    "$C_ERR"  "$C_OFF" "$1"; }
+
+# --------------------------------------------------- 扫描源码最新修改时间
+# 只扫源码目录，排除构建产物与运行期数据。
+newest_source() {
+    find "$PROJECT_DIR" \
+        \( -name build -o -name 'build-*' -o -name 'cmake-build-*' \
+           -o -name dist -o -name .git -o -name .idea -o -name .vscode \
+           -o -name config -o -name log \) -prune -o \
+        -type f -print 2>/dev/null |
+    grep -Ev '/\.(git|idea|vscode)/' |
+    grep -E "^$PROJECT_DIR/(main\.cpp|CMakeLists\.txt|CMakePresets\.json|core/|ui/|utils/|resources/|script/|README\.md$)" |
+    while IFS= read -r f; do
+        printf '%s\t%s\n' "$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)" \
+                          "${f#$PROJECT_DIR/}"
+    done | sort -rn | head -1
 }
 
-find_python() {
-  local venv_py
-  if [ "$PLATFORM" = "windows" ]; then
-    venv_py="$PROJECT_DIR/.venv/Scripts/python.exe"
-  else
-    venv_py="$PROJECT_DIR/.venv/bin/python"
-  fi
+# --------------------------------------------------------- 产物检测
+show_build_status() {
+    local dist="$PROJECT_DIR/dist"
 
-  if [ -e "$venv_py" ]; then
-    if is_python3 "$venv_py"; then
-      PY_EXE="$venv_py"; PY_KIND="venv"; return 0
+    step "打包产物检测"
+
+    if [ ! -d "$dist" ]; then
+        warn "还没打过包：dist/ 目录不存在"
+        return 1
     fi
-    warn "      .venv 解释器无法运行（base Python 可能已被卸载）"
-    warn "      请删除 .venv 后重新执行 script/install.sh，或改用系统 Python"
-  fi
 
-  local c
-  for c in python3 python; do
-    if command -v "$c" >/dev/null 2>&1; then
-      local p; p="$(command -v "$c")"
-      if is_python3 "$p"; then PY_EXE="$p"; PY_KIND="system"; return 0; fi
+    local newest
+    newest="$(newest_source || true)"
+    if [ -z "$newest" ]; then
+        warn "没有找到任何源码文件，跳过检测"
+        return 1
     fi
-  done
-  return 1
-}
 
-# ---------- 1. 生成 README ----------
-gen_readme() {
-  step "[1/4] Generating README.md ..."
-  local gen="$SCRIPT_DIR/gen_readme.py"
-  [ -f "$gen" ] || { err "缺少 README 生成器: $gen"; exit 1; }
-  PYTHONIOENCODING=utf-8 "$PY_EXE" "$gen" --version "$VERSION" || {
-    err "gen_readme.py 执行失败"
-    exit 1
-  }
-}
+    local newest_epoch newest_file
+    newest_epoch="$(printf '%s' "$newest" | cut -f1)"
+    newest_file="$(printf '%s' "$newest" | cut -f2)"
 
-# ---------- 构造 tar 排除参数 ----------
-# GNU tar 的 --exclude 不含 '/' 时按「任一层级」匹配，所以目录名不要带前缀，
-# 只有 config/config.json 这种带路径定位的才写全。
-TAR_EXCLUDES=()
-for _d in "${EXCLUDE_DIRS[@]}";        do TAR_EXCLUDES+=("--exclude=$_d"); done
-for _p in "${EXCLUDE_FILE_PATTERNS[@]}"; do TAR_EXCLUDES+=("--exclude=$_p"); done
-for _p in "${ZIP_ONLY_EXCLUDE_FILES[@]}"; do TAR_EXCLUDES+=("--exclude=./config/$_p"); done
-unset _d _p
-
-# ---------- 2. 打包源码 ----------
-pack_source() {
-  step "[2/3] Packaging source archive ..."
-
-  local dist="$PROJECT_DIR/dist"
-  mkdir -p "$dist"
-  local stamp; stamp="$(date +%Y%m%d)"
-  local base="AutoClicker_v${VERSION}_${stamp}"
-
-  local made=()
-
-  # --- tar.gz：三个平台都有 tar，作为保底格式 ---
-  local tarball="$dist/${base}.tar.gz"
-  rm -f "$tarball"
-  tar "${TAR_EXCLUDES[@]}" -czf "$tarball" . 2>/dev/null
-  made+=("$tarball")
-
-  # --- zip：有 zip 命令时才做，方便 Windows 用户直接解压 ---
-  if command -v zip >/dev/null 2>&1; then
-    local zipfile="$dist/${base}.zip"
-    rm -f "$zipfile"
-    # 收集要打包的文件清单，避开 GNU/BSD find 语法差异
-    local tmpdir; tmpdir="$(mktemp -d)"
-    local stage="$tmpdir/stage"
-    mkdir -p "$stage"
-    copy_tree "$stage"
-    ( cd "$stage" && zip -q -r -X "$zipfile" . ) || warn "      zip 打包失败，已跳过"
-    rm -rf "$tmpdir"
-    [ -f "$zipfile" ] && made+=("$zipfile")
-  else
-    warn "      系统没有 zip 命令，跳过 .zip（tar.gz 已生成）"
-  fi
-
-  local f size
-  for f in "${made[@]}"; do
-    [ -f "$f" ] || continue
-    size="$(du -k "$f" | cut -f1)"
-    ok "      $(basename "$f")  (${size} KB)"
-  done
-
-  if [ ${#made[@]} -eq 0 ]; then
-    err "没有生成任何归档"
-    exit 1
-  fi
-}
-
-# 把项目复制到暂存目录（带排除），供 zip 使用
-copy_tree() {
-  local dest="$1"
-  local d p
-  local rsync_args=()
-  if command -v rsync >/dev/null 2>&1; then
-    for d in "${EXCLUDE_DIRS[@]}";    do rsync_args+=("--exclude=$d/"); done
-    for p in "${EXCLUDE_FILE_PATTERNS[@]}"; do rsync_args+=("--exclude=$p"); done
-    for p in "${ZIP_ONLY_EXCLUDE_FILES[@]}"; do rsync_args+=("--exclude=$p"); done
-    rsync -a "${rsync_args[@]}" "$PROJECT_DIR"/ "$dest"/
-    return
-  fi
-  # 无 rsync 时用 tar 管道
-  tar "${TAR_EXCLUDES[@]}" -cf - . 2>/dev/null | ( cd "$dest" && tar -xf - )
-  # 排除后 config/ 可能变空
-  [ -d "$dest/config" ] && [ -z "$(ls -A "$dest/config" 2>/dev/null)" ] && rmdir "$dest/config"
-}
-
-# ---------- 3. 打 exe ----------
-# $1 = onefile | onedir
-#   onefile → dist/AutoClicker.exe（单文件）+ 带版本号副本
-#   onedir  → build/green/AutoClicker/ 整个文件夹压成 dist/AutoClicker_v*_win64.zip
-build_exe() {
-  local mode="${1:-onefile}"
-  local label
-  [ "$mode" = "onefile" ] && label="单文件 exe" || label="绿色目录"
-
-  if [ "$PLATFORM" != "windows" ]; then
-    warn "[2/4] 跳过 $label：PyInstaller 不能跨平台交叉编译（当前平台: $PLATFORM）"
-    warn "      本平台只能打源码归档；要程序请到 Windows 上执行 package.ps1"
-    return 0
-  fi
-
-  step "[2/4] Building $label ..."
-
-  if [ "$DO_DEPS" -eq 1 ]; then
-    if ! "$PY_EXE" -c 'import PyInstaller' 2>/dev/null; then
-      warn "      未安装 PyInstaller，正在安装 ..."
-      "$PY_EXE" -m pip install --upgrade pyinstaller || { err "PyInstaller 安装失败"; exit 1; }
+    local fmt
+    if date -d "@$newest_epoch" '+%Y-%m-%d %H:%M:%S' >/dev/null 2>&1; then
+        fmt="$(date -d "@$newest_epoch" '+%Y-%m-%d %H:%M:%S')"
+    else
+        fmt="$(date -r "$newest_epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$newest_epoch")"
     fi
-  fi
+    info "源码最新改动: $fmt  ($newest_file)"
 
-  local dist="$PROJECT_DIR/dist"
-  local build="$PROJECT_DIR/build"
-  mkdir -p "$dist" "$build"
-  # 两种形态用各自的 spec/work 目录，否则第二次跑会复用第一次的中间产物
-  local specdir="$build/pyinstaller-$mode"
-  local workdir="$build/pyinstaller-work-$mode"
-  # --onedir 的产物是文件夹，先吐到 build/green/
-  local outdir="$dist"
-  [ "$mode" = "onedir" ] && outdir="$build/green"
+    local today_stamp all_fresh=1 today_count=0 found=0 skipped_count=0
+    today_stamp="$(date '+%Y%m%d')"
 
-  # Windows 路径必须用反斜杠给 PyInstaller 的 --add-data 分隔符
-  local add_data="$PROJECT_DIR/utils/static;utils/static"
-  case "$PLATFORM" in
-    windows) add_data="$(cygpath -w "$PROJECT_DIR/utils/static" 2>/dev/null || echo "$PROJECT_DIR/utils/static");utils/static" ;;
-  esac
+    while IFS= read -r a; do
+        [ -z "$a" ] && continue
+        local name size_epoch size_bytes age_text size_h
+        name="$(basename "$a")"
+        size_bytes="$(stat -c %s "$a" 2>/dev/null || stat -f %z "$a" 2>/dev/null || echo 0)"
+        size_epoch="$(stat -c %Y "$a" 2>/dev/null || stat -f %m "$a" 2>/dev/null || echo 0)"
+        size_h="$(awk -v b="$size_bytes" 'BEGIN { printf "%.1f MB", b/1048576 }')"
+        age_text="$(awk -v now="$(date +%s)" -v t="$size_epoch" 'BEGIN {
+            d = now - t;
+            if (d < 3600) printf "%.0f 分钟前", d/60;
+            else if (d < 86400) printf "%.1f 小时前", d/3600;
+            else printf "%.0f 天前", d/86400;
+        }')"
+        found=1
 
-  local icon="$PROJECT_DIR/utils/static/Ralsei.ico"
+        # 产物归属：判过期的意义是"提醒我该重打了"。不属于自己的产物永远打不出来，
+        # 算进来只会让自检每次都报过期，最后就没人看它了。
+        #   本脚本产出 *.tar.gz 与 *_src.zip
+        #   *.exe 与 *_win64.zip 是 package.ps1 的（Windows 专用）
+        # 两个脚本在 Windows 下产出的是同一份东西（dist/AutoClicker.exe +
+        # 依赖 + _win64.zip），所以不再按「谁产出的」跳过 —— 只有源码归档
+        # 是 --with-source 才产，默认跳过。
+        case "$name" in
+            *_src.tar.gz|*_src.zip)
+                if [ "${WITH_SOURCE:-0}" -eq 0 ]; then
+                    printf '  %s[跳过]%s %s  (%s)  源码归档，需 --with-source 才会重建\n' \
+                        "$C_DIM" "$C_OFF" "$name" "$size_h"
+                    skipped_count=$((skipped_count + 1))
+                    continue
+                fi
+                ;;
+        esac
 
-  # 版本信息：PyInstaller 要的是 Python 字面量，不是 .rc。
-  # 不给的话 exe 右键属性 → 详细信息 是空的，看着像没编完整。
-  local verfile="$build/version_info_$mode.txt"
-  local v1=0 v2=0 v3=0 rest
-  rest="$VERSION"
-  v1="$(printf '%s' "$rest" | cut -d. -f1)"; v2="$(printf '%s' "$rest" | cut -d. -f2)"; v3="$(printf '%s' "$rest" | cut -d. -f3)"
-  case "$v1" in ''|*[!0-9]*) v1=1 ;; esac
-  case "$v2" in ''|*[!0-9]*) v2=0 ;; esac
-  case "$v3" in ''|*[!0-9]*) v3=0 ;; esac
-  cat > "$verfile" <<VEREOF
-VSVersionInfo(
-  ffi=FixedFileInfo(
-    filevers=($v1, $v2, $v3, 0),
-    prodvers=($v1, $v2, $v3, 0),
-    mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)
-  ),
-  kids=[
-    StringFileInfo([
-      StringTable(
-        u'080404B0',
-        [StringStruct(u'CompanyName', u'YOUXICHUNMI'),
-         StringStruct(u'FileDescription', u'AutoClicker - 自动连点器'),
-         StringStruct(u'FileVersion', u'$VERSION'),
-         StringStruct(u'InternalName', u'AutoClicker'),
-         StringStruct(u'LegalCopyright', u'MIT License'),
-         StringStruct(u'OriginalFilename', u'AutoClicker.exe'),
-         StringStruct(u'ProductName', u'AutoClicker'),
-         StringStruct(u'ProductVersion', u'$VERSION')])
-    ]),
-    VarFileInfo([VarStruct(u'Translation', [2052, 1200])])
-  ]
-)
-VEREOF
+        # 文件名日期戳不是今天的视为历史归档，不参与判定
+        local stamp
+        stamp="$(printf '%s' "$name" | sed -n 's/.*_\([0-9]\{8\}\)[_.].*/\1/p')"
+        if [ -n "$stamp" ] && [ "$stamp" != "$today_stamp" ]; then
+            printf '  %s[归档]%s %s  (%s)  历史产物，不参与判定\n' "$C_DIM" "$C_OFF" "$name" "$size_h"
+            continue
+        fi
 
-  local pyargs=(
-    -m PyInstaller
-    --noconfirm --clean "--$mode" --windowed
-    --name AutoClicker
-    --distpath "$outdir"
-    --workpath "$workdir"
-    --specpath "$specdir"
-    --add-data "$add_data"
-  )
-  # 版本资源是 PE 专有的，非 Windows 传了反而可能让 PyInstaller 报错
-  case "$PLATFORM" in
-    windows) pyargs+=(--version-file "$verfile") ;;
-  esac
-  [ -f "$icon" ] && pyargs+=(--icon "$icon")
-  local m
-  for m in PyQt6.QtWebEngineCore PyQt6.QtWebEngineWidgets PyQt6.QtMultimedia \
-           PyQt6.QtQuick PyQt6.QtQml PyQt6.QtBluetooth PyQt6.QtDesigner \
-           PyQt6.QtHelp PyQt6.QtNetworkAuth PyQt6.Qt3DCore PyQt6.QtCharts; do
-    pyargs+=(--exclude-module "$m")
-  done
-  pyargs+=("$PROJECT_DIR/main.py")
-
-  printf '%s      pyinstaller %s%s\n' "$C_DIM" "${pyargs[*]}" "$C_OFF"
-  "$PY_EXE" "${pyargs[@]}" || { err "PyInstaller 构建失败"; exit 1; }
-
-  local exe
-  if [ "$mode" = "onefile" ]; then
-    exe="$dist/AutoClicker.exe"
-  else
-    exe="$outdir/AutoClicker/AutoClicker.exe"
-  fi
-  [ -f "$exe" ] || { err "构建结束但未找到 $exe"; exit 1; }
-  ok "      AutoClicker.exe  ($(( $(stat -c%s "$exe" 2>/dev/null || echo 0) / 1048576 )) MB)"
-
-  local stamp; stamp="$(date +%Y%m%d)"
-
-  # 单文件形态：再放一份带版本号的副本便于归档，没有 zip 可打。
-  if [ "$mode" = "onefile" ]; then
-    local versioned="$dist/AutoClicker_v${VERSION}_${stamp}_single_win64.exe"
-    cp "$exe" "$versioned"
-    ok "      $(basename "$versioned")"
-    return 0
-  fi
-
-
-  # exe + 依赖 + 文档 + 配置说明 打成一个发布包
-  local relbase="AutoClicker_v${VERSION}_${stamp}_win64"
-  local tmpdir; tmpdir="$(mktemp -d)"
-  cp -r "$outdir/AutoClicker/." "$tmpdir/"
-  [ -f "$PROJECT_DIR/README.md" ] && cp "$PROJECT_DIR/README.md" "$tmpdir/"
-  [ -f "$PROJECT_DIR/LICENSE" ]   && cp "$PROJECT_DIR/LICENSE"   "$tmpdir/"
-  mkdir -p "$tmpdir/config"
-  cat > "$tmpdir/config/说明.txt" <<'EOF'
-AutoClicker 首次运行时会在本目录生成 config.json。
-删掉 config.json 即可恢复默认配置。
-日志写在同级的 log/ 目录，按日期滚动。
+        today_count=$((today_count + 1))
+        if [ "$size_epoch" -lt "$newest_epoch" ]; then
+            printf '  %s[过期]%s %s  (%s, %s)\n' "$C_WARN" "$C_OFF" "$name" "$size_h" "$age_text"
+            all_fresh=0
+        else
+            printf '  %s[最新]%s %s  (%s, %s)\n' "$C_OK" "$C_OFF" "$name" "$size_h" "$age_text"
+        fi
+    done <<EOF
+$(find "$dist" -maxdepth 1 -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.tar.gz' \) 2>/dev/null | sort -r)
 EOF
 
-  local rel="$dist/${relbase}.zip"
-  rm -f "$rel"
-  if command -v zip >/dev/null 2>&1; then
-    ( cd "$tmpdir" && zip -q -r -X "$rel" . )
-  else
-    # 无 zip 时用 PowerShell 兜底（Windows 上必然可用）
-    local win_tmp win_rel
-    win_tmp="$(cygpath -w "$tmpdir" 2>/dev/null || echo "$tmpdir")"
-    win_rel="$(cygpath -w "$rel" 2>/dev/null || echo "$rel")"
-    powershell.exe -NoProfile -Command \
-      "Compress-Archive -Path '$win_tmp\*' -DestinationPath '$win_rel' -CompressionLevel Optimal -Force" \
-      || { rm -rf "$tmpdir"; err "创建 $rel 失败"; exit 1; }
-  fi
-  rm -rf "$tmpdir"
-  ok "      ${relbase}.zip  ($(( $(stat -c%s "$rel" 2>/dev/null || echo 0) / 1024 )) KB)"
-}
-
-# ============================================================
-#  0. 检测 dist/ 里的产物是否比源码新
-# ============================================================
-newest_source() {
-  # 输出: "<epoch>\t<相对路径>"，只看会进包的文件
-  local newest=0 newestf=""
-  while IFS= read -r f; do
-    local t
-    t=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
-    if [ "$t" -gt "$newest" ]; then
-      newest="$t"
-      newestf="${f#$PROJECT_DIR/}"
+    if [ "$found" -eq 0 ]; then
+        warn "dist/ 里没有任何产物"
+        return 1
     fi
-  done < <(find "$PROJECT_DIR" \
-      \( -name .venv -o -name venv -o -name __pycache__ -o -name .git \
-         -o -name dist -o -name build -o -name log -o -name .idea \
-         -o -name .vscode -o -name node_modules -o -name .pytest_cache \
-         -o -name .mypy_cache \) -prune -o -type f -print 2>/dev/null \
-    | grep -Ev '\.(pyc|pyo|pyd|log)$|/(\.DS_Store|Thumbs\.db)$' \
-    | grep -E '^'"$PROJECT_DIR"'/(main\.py|core/|ui/|utils/|script/|README\.md$|requirements\.txt$)')
 
-  printf '%s\t%s\n' "$newest" "$newestf"
-}
+    if [ "$today_count" -eq 0 ]; then
+        if [ "$skipped_count" -gt 0 ]; then
+            warn "dist/ 里只有别的脚本的产物，本脚本今天还没打过包 —— 需要打包。"
+        else
+            warn "dist/ 里没有今天（$today_stamp）的产物 —— 需要打包。"
+        fi
+        return 1
+    fi
 
-show_build_status() {
-  echo ""
-  echo "------------- 打包产物检测 -------------"
+    # 该有的形态齐全吗？两种形态产出的文件名不一样，
+    # 只按 mtime 判「过期」发现不了「这一种形态根本没打过」。
+    if [ -d "$dist" ]; then
+        local today_hits
+        today_hits="$(find "$dist" -maxdepth 1 -type f -name "*_${today_stamp}.*" 2>/dev/null | wc -l | tr -d ' ')"
+        if [ "$today_hits" -gt 0 ]; then
+            if [ "${WANT_GREEN:-1}" -eq 1 ]; then
+                if ! find "$dist" -maxdepth 1 -type f -name "*_${today_stamp}_win64.zip" 2>/dev/null | grep -q .; then
+                    warn "今天还没有绿色目录 zip（AutoClicker_v${VERSION}_${today_stamp}_win64.zip）。"
+                    all_fresh=0
+                fi
+            fi
+            if [ "${WANT_SINGLE:-1}" -eq 1 ]; then
+                if ! find "$dist" -maxdepth 1 -type f -name "*_${today_stamp}_single_win64.exe" 2>/dev/null | grep -q .; then
+                    warn "今天还没有单文件 exe（AutoClicker_v${VERSION}_${today_stamp}_single_win64.exe）。"
+                    all_fresh=0
+                fi
+            fi
+        fi
+    fi
 
-  local dist_dir="$PROJECT_DIR/dist"
-  if [ ! -d "$dist_dir" ]; then
-    warn "  dist/ 目录不存在 —— 还没打过包。"
-    echo "----------------------------------------"
-    return 1
-  fi
-
-  local src_line src_time src_file
-  src_line=$(newest_source)
-  src_time="${src_line%%$'\t'*}"
-  src_file="${src_line#*$'\t'}"
-
-  if [ "${src_time:-0}" -gt 0 ]; then
-    echo "  源码最新改动: $(date -d "@$src_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -r "$src_time" '+%Y-%m-%d %H:%M:%S')  ($src_file)"
-  fi
-
-  local artifacts n=0 all_fresh=1 today_count=0
-  local TODAY_STAMP
-  TODAY_STAMP=$(date '+%Y%m%d')
-  artifacts=$(find "$dist_dir" -maxdepth 1 -type f \
-      \( -name '*.zip' -o -name '*.tar.gz' -o -name 'AutoClicker.exe' \
-         -o -name '*_single_win64.exe' \) -print 2>/dev/null)
-
-  if [ -z "$artifacts" ]; then
-    warn "  dist/ 里没有任何产物 —— 需要打包。"
-    echo "----------------------------------------"
-    return 1
-  fi
-
-  while IFS= read -r a; do
-    [ -n "$a" ] || continue
-    n=$((n + 1))
-    local at asize amtime size_mb
-    at=$(stat -c %Y "$a" 2>/dev/null || stat -f %m "$a" 2>/dev/null || echo 0)
-    asize=$(stat -c %s "$a" 2>/dev/null || stat -f %z "$a" 2>/dev/null || echo 0)
-    size_mb=$(awk -v s="$asize" 'BEGIN{printf "%.2f", s/1048576}')
-
-    local now age age_h age_d age_str
-    now=$(date +%s)
-    age=$((now - at))
-    age_h=$((age / 3600))
-    age_d=$((age / 86400))
-    if [ "$age" -lt 3600 ]; then
-      age_str="$((age / 60)) 分钟前"
-    elif [ "$age_h" -lt 24 ]; then
-      age_str="${age_h} 小时前"
+    echo ""
+    if [ "$all_fresh" -eq 1 ]; then
+        printf '%s结论：产物已是最新，无需重新打包。%s\n' "$C_OK" "$C_OFF"
+        return 0
     else
-      age_str="${age_d} 天前"
+        printf '%s结论：源码比产物新，建议重新打包。%s\n' "$C_WARN" "$C_OFF"
+        return 1
     fi
+}
 
-    # 日期戳不是今天的产物属于历史归档（同一天多次打包会覆盖同名文件，
-    # 换了一天就留成旧文件）。它们不可能是本次打包的预期产物，
-    # 拿它们跟今天的源码比 mtime 只会永远报过期，所以只展示不判定。
-    amonth_stamp=$(basename "$a" | sed -n 's/.*_\([0-9]\{8\}\)[_.].*/\1/p')
-    is_old_date=0
-    if [ -n "$amonth_stamp" ] && [ "$amonth_stamp" != "$TODAY_STAMP" ]; then
-      is_old_date=1
-    fi
+# ------------------------------------------------------------------ 工具链探测
 
-    # 源码 zip（AutoClicker_vX_日期.zip，不带 _win64）只在 --with-source 时产出
-    local abase; abase=$(basename "$a")
-    local is_src_zip=0
-    case "$abase" in
-      AutoClicker_v*_win64.zip) is_src_zip=0 ;;
-      AutoClicker_v*_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].zip) is_src_zip=1 ;;
+# Cygwin/MSYS 自带的 cmake 会把 D:\xxx 改写成 /cygdrive/d/xxx 再传给下游，
+# 结果 CMake 报 "The source directory ... does not exist"。必须挑原生 cmake。
+is_native_tool() {
+    case "$1" in
+        *cygwin*|*Cygwin*|*/msys*|*/MSYS*|*\\msys*|*/git/usr/bin/*) return 1 ;;
+        *) return 0 ;;
     esac
-
-    if [ "$is_old_date" -eq 1 ]; then
-      printf '  [归档] %s  (%s MB, %s)  历史产物，不参与判定\n' "$abase" "$size_mb" "$age_str"
-    elif [ "$is_src_zip" -eq 1 ] && [ "${WITH_SOURCE:-0}" -eq 0 ]; then
-      printf '  [跳过] %s  (%s MB, %s)  源码 zip，需 --with-source 才会重建\n' "$abase" "$size_mb" "$age_str"
-    elif [ "${a%.tar.gz}" != "$a" ]; then
-      printf '  [跳过] %s  (%s MB, %s)  package.sh 的产物\n' "$abase" "$size_mb" "$age_str"
-    elif [ "$at" -lt "${src_time:-0}" ]; then
-      # AutoClicker.exe 是 package.ps1 的产物，非 Windows 上不算它
-      if [ "$(basename "$a")" = "AutoClicker.exe" ] && [ "$PLATFORM" != "windows" ]; then
-        printf '  [跳过] %s  (%s MB, %s)  仅 Windows 产物\n' "$(basename "$a")" "$size_mb" "$age_str"
-      else
-        all_fresh=0
-        warn "  [过期] $(basename "$a")  (${size_mb} MB, ${age_str})"
-      fi
-    else
-      ok   "  [最新] $(basename "$a")  (${size_mb} MB, ${age_str})"
-    fi
-    if [ "$is_old_date" -eq 0 ]; then today_count=$((today_count + 1)); fi
-  done <<< "$artifacts"
-
-  if [ "$today_count" -eq 0 ]; then
-    all_fresh=0
-    warn "  dist/ 里没有今天（$TODAY_STAMP）的产物 —— 需要打包。"
-  else
-    # 两种形态都要有：绿色目录 zip 与单文件 exe。缺哪个都算需要重新打包。
-    if [ "$BUILD_EXE" -eq 1 ] && [ "$PLATFORM" = "windows" ]; then
-      if [ "$SKIP_SINGLE" -eq 0 ]; then
-        if ! find "$dist_dir" -maxdepth 1 -type f -name "*_${TODAY_STAMP}_single_win64.exe" | grep -q .; then
-          all_fresh=0
-          warn "  缺少今天的单文件 exe（*_${TODAY_STAMP}_single_win64.exe）—— 需要打包。"
-        fi
-      fi
-      if [ "$SKIP_GREEN" -eq 0 ]; then
-        if ! find "$dist_dir" -maxdepth 1 -type f -name "*_${TODAY_STAMP}_win64.zip" | grep -q .; then
-          all_fresh=0
-          warn "  缺少今天的绿色目录 zip（*_${TODAY_STAMP}_win64.zip）—— 需要打包。"
-        fi
-      fi
-    fi
-  fi
-
-  echo "----------------------------------------"
-  if [ "$all_fresh" -eq 1 ]; then
-    ok "  结论: 产物已是最新，无需重新打包。"
-    return 0
-  else
-    warn "  结论: 源码比产物新，建议重新打包。"
-    return 1
-  fi
 }
 
-# ============================================================
-#  主流程
-# ============================================================
-echo ""
-echo "============================================"
-echo "        AutoClicker Package Builder"
-echo "============================================"
-echo "[INFO] Project : $PROJECT_DIR"
-echo "[INFO] Version : $VERSION"
-echo "[INFO] Platform: $PLATFORM"
-echo "[INFO] BuildExe: $BUILD_EXE"
-echo ""
+find_native_cmake() {
+    local cand
+    # 1. Qt 自带的 CMake（装了 Qt 就一定有，且肯定是原生 Windows 版）
+    for cand in "/e/Qt/Tools/CMake_64/bin/cmake.exe" \
+                "/c/Qt/Tools/CMake_64/bin/cmake.exe" \
+                "/d/Qt/Tools/CMake_64/bin/cmake.exe"; do
+        [ -f "$cand" ] && { echo "$cand"; return 0; }
+    done
+    # 2. CMake 官方安装位置
+    for cand in "/c/Program Files/CMake/bin/cmake.exe" \
+                "/c/Program Files (x86)/CMake/bin/cmake.exe"; do
+        [ -f "$cand" ] && { echo "$cand"; return 0; }
+    done
+    # 3. PATH 里第一个非 Cygwin/MSYS 的
+    local p
+    p="$(command -v cmake 2>/dev/null || true)"
+    if [ -n "$p" ] && is_native_tool "$p"; then
+        echo "$p"; return 0
+    fi
+    return 1
+}
 
-if show_build_status; then BUILD_FRESH=1; else BUILD_FRESH=0; fi
+find_native_ninja() {
+    local cand
+    for cand in "/e/Qt/Tools/Ninja/ninja.exe" \
+                "/c/Qt/Tools/Ninja/ninja.exe" \
+                "/d/Qt/Tools/Ninja/ninja.exe"; do
+        [ -f "$cand" ] && { echo "$cand"; return 0; }
+    done
+    local p
+    p="$(command -v ninja 2>/dev/null || true)"
+    if [ -n "$p" ] && is_native_tool "$p"; then
+        echo "$p"; return 0
+    fi
+    return 1
+}
+
+# 没设 CMAKE_PREFIX_PATH 时，猜一个 Qt6 安装位置
+guess_qt_prefix() {
+    local root ver
+    for root in /e/Qt /c/Qt /d/Qt "/c/Program Files/Qt" "/e/Program Files/Qt"; do
+        [ -d "$root" ] || continue
+        for ver in $(ls -1 "$root" 2>/dev/null | grep -E '^6\.[0-9]+(\.[0-9]+)?$' | sort -rV); do
+            if [ -f "$root/$ver/mingw_64/lib/cmake/Qt6/Qt6Config.cmake" ]; then
+                echo "$root/$ver/mingw_64"; return 0
+            fi
+            if [ -f "$root/$ver/msvc2022_64/lib/cmake/Qt6/Qt6Config.cmake" ]; then
+                echo "$root/$ver/msvc2022_64"; return 0
+            fi
+        done
+    done
+    return 1
+}
+
+# ------------------------------------------------------------------ 编译
+do_build() {
+    step "编译 Release"
+
+    local cmake_bin
+    cmake_bin="$(find_native_cmake)"
+    if [ -z "$cmake_bin" ]; then
+        err "找不到原生 cmake（Cygwin/MSYS 里那个会把 D:\\ 路径改写成 /cygdrive/d/，不能用）"
+        return 1
+    fi
+    info "cmake: $cmake_bin"
+
+    local qt_prefix="${QT_PREFIX:-${CMAKE_PREFIX_PATH:-${QTDIR:-}}}"
+    local build_dir="$PROJECT_DIR/build/release"
+    local args=(-S "$PROJECT_DIR" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release)
+
+    if [ -n "$qt_prefix" ]; then
+        args+=("-DCMAKE_PREFIX_PATH=$qt_prefix")
+        info "Qt: $qt_prefix"
+    else
+        local guessed
+        if guessed="$(guess_qt_prefix)"; then
+            qt_prefix="$guessed"
+            args+=("-DCMAKE_PREFIX_PATH=$qt_prefix")
+            info "Qt: $qt_prefix（自动探测）"
+        else
+            warn "CMAKE_PREFIX_PATH / QTDIR / QT_PREFIX 都没设置，CMake 可能找不到 Qt6"
+        fi
+    fi
+
+    if [ ! -f "$build_dir/CMakeCache.txt" ]; then
+        local ninja_bin
+        if ninja_bin="$(find_native_ninja)"; then
+            args+=(-G Ninja "-DCMAKE_MAKE_PROGRAM=$ninja_bin")
+            info "生成器: Ninja ($ninja_bin)"
+        fi
+    fi
+
+    info "配置: $cmake_bin ${args[*]}"
+    if ! "$cmake_bin" "${args[@]}" > /tmp/autoclicker_configure.log 2>&1; then
+        err "配置失败"
+        tail -40 /tmp/autoclicker_configure.log | sed 's/^/    /'
+        mkdir -p "$PROJECT_DIR/build"
+        mv /tmp/autoclicker_configure.log "$PROJECT_DIR/build/configure-error.log"
+        err "完整日志: build/configure-error.log"
+        return 1
+    fi
+    ok "配置成功"
+
+    info "编译中..."
+    if ! "$cmake_bin" --build "$build_dir" --config Release > /tmp/autoclicker_build.log 2>&1; then
+        err "编译失败"
+        tail -60 /tmp/autoclicker_build.log | sed 's/^/    /'
+        mkdir -p "$PROJECT_DIR/build"
+        mv /tmp/autoclicker_build.log "$PROJECT_DIR/build/build-error.log"
+        err "完整日志: build/build-error.log"
+        return 1
+    fi
+    tail -5 /tmp/autoclicker_build.log | sed 's/^/    /'
+    ok "编译成功"
+}
+
+# ------------------------------------------------------------------ 打包
+# 只打包源码，不含构建产物、运行期数据与 .git。
+pack_source() {
+    step "压缩源码包"
+
+    local stamp dist tar_path
+    stamp="$(date '+%Y%m%d')"
+    dist="$PROJECT_DIR/dist"
+    tar_path="$dist/AutoClicker_v${VERSION}_${stamp}_src.tar.gz"
+    mkdir -p "$dist"
+
+    local excludes=(
+        --exclude=build --exclude='build-*' --exclude='cmake-build-*'
+        --exclude=dist --exclude=.git --exclude=.idea --exclude=.vscode
+        --exclude=config --exclude=log --exclude='__pycache__'
+        --exclude='*.o' --exclude='*.obj' --exclude='*.exe' --exclude='*.dll'
+    )
+
+    tar -czf "$tar_path" "${excludes[@]}" -C "$PROJECT_DIR" . 2>/dev/null || {
+        err "打包失败"
+        return 1
+    }
+
+    local size
+    size="$(awk -v b="$(stat -c %s "$tar_path" 2>/dev/null || stat -f %z "$tar_path")" 'BEGIN { printf "%.0f KB", b/1024 }')"
+    ok "源码包: dist/$(basename "$tar_path") ($size)"
+
+    # 有 zip 命令就额外出一个 zip（Windows 用户解压更方便）
+    if command -v zip >/dev/null 2>&1; then
+        local zip_path="$dist/AutoClicker_v${VERSION}_${stamp}_src.zip"
+        rm -f "$zip_path"
+        ( cd "$PROJECT_DIR" && zip -qr "$zip_path" . \
+            -x 'build/*' 'build-*/*' 'cmake-build-*/*' 'dist/*' '.git/*' \
+               '.idea/*' '.vscode/*' 'config/*' 'log/*' '*.o' '*.obj' '*.exe' '*.dll' ) || true
+        if [ -f "$zip_path" ]; then
+            ok "源码包: dist/$(basename "$zip_path")"
+        fi
+    fi
+}
+
+# --------------------------------------------------- 要求打 exe（仅 Windows）
+build_exe() {
+    if [ "$PLATFORM" != "windows" ]; then
+        err "PyInstaller / windeployqt 都不能跨平台交叉编译。"
+        err "当前平台: $PLATFORM。请到 Windows 上运行 script/package.ps1。"
+        return 1
+    fi
+
+    step "收集 Qt 运行时依赖"
+
+    local build_dir="$PROJECT_DIR/build/release"
+    local dist="$PROJECT_DIR/dist"
+    local exe=""
+    for cand in "$build_dir/AutoClicker.exe" "$build_dir/Release/AutoClicker.exe"; do
+        [ -f "$cand" ] && { exe="$cand"; break; }
+    done
+    if [ -z "$exe" ]; then
+        err "编译产物里找不到 AutoClicker.exe"
+        return 1
+    fi
+    info "可执行文件: $exe"
+
+    local qt_prefix="${QT_PREFIX:-${CMAKE_PREFIX_PATH:-${QTDIR:-}}}"
+    if [ -z "$qt_prefix" ] || [ ! -d "$qt_prefix" ]; then
+        local guessed
+        if guessed="$(guess_qt_prefix)"; then qt_prefix="$guessed"; fi
+    fi
+    local deployqt
+    if [ -n "$qt_prefix" ] && [ -f "$qt_prefix/bin/windeployqt.exe" ]; then
+        deployqt="$qt_prefix/bin/windeployqt.exe"
+    elif command -v windeployqt >/dev/null 2>&1; then
+        deployqt="$(command -v windeployqt)"
+    else
+        err "找不到 windeployqt，请设置 CMAKE_PREFIX_PATH 或 QT_PREFIX 指向 Qt6 安装目录"
+        return 1
+    fi
+
+    local target="${TARGET_DIR:-$dist}"
+    rm -rf "$target"
+    mkdir -p "$target"
+    cp "$exe" "$target/AutoClicker.exe"
+    # cp 保留编译时的 mtime，自检会一直判「过期」。写成部署时间。
+    touch "$target/AutoClicker.exe"
+    ok "已复制 exe 到 $(basename "$target")/"
+
+    "$deployqt" --release --no-translations --no-system-d3d-compiler \
+                --no-system-dxc-compiler --no-opengl-sw --compiler-runtime \
+                "$target/AutoClicker.exe" >/dev/null 2>&1 || \
+        warn "windeployqt 返回非零，请检查依赖是否完整"
+
+    # GIF 播放依赖 qgif.dll
+    if [ -n "$qt_prefix" ] && [ -f "$qt_prefix/plugins/imageformats/qgif.dll" ] \
+       && [ ! -f "$target/imageformats/qgif.dll" ]; then
+        mkdir -p "$target/imageformats"
+        cp "$qt_prefix/plugins/imageformats/qgif.dll" "$target/imageformats/"
+        info "补充 imageformats/qgif.dll"
+    fi
+
+    if [ ! -f "$target/platforms/qwindows.dll" ]; then
+        warn "缺少 platforms/qwindows.dll —— 运行时可能报找不到平台插件"
+    fi
+    ok "依赖收集完成"
+}
+
+# ================================================================ 单文件 exe（Enigma Virtual Box）
+
+# 找 Enigma Virtual Box 的 enigmavbconsole.exe
+find_enigmavb() {
+    local cand
+    if [ -n "${ENIGMAVB_DIR:-}" ] && [ -f "$ENIGMAVB_DIR/enigmavbconsole.exe" ]; then
+        echo "$ENIGMAVB_DIR"; return 0
+    fi
+    for cand in "/e/Tools/EnigmaVB" "/c/Program Files/Enigma Virtual Box" \
+                "/c/Program Files (x86)/Enigma Virtual Box" \
+                "${LOCALAPPDATA:-}/Enigma Virtual Box" \
+                "${PROGRAMFILES:-}/Enigma Virtual Box"; do
+        if [ -n "$cand" ] && [ -f "$cand/enigmavbconsole.exe" ]; then
+            echo "$cand"; return 0
+        fi
+    done
+    if command -v enigmavbconsole.exe >/dev/null 2>&1; then
+        dirname "$(command -v enigmavbconsole.exe)"; return 0
+    fi
+    return 1
+}
+
+# 把 MSYS 路径转成 Windows 原生路径（EVB 只认反斜杠形式）
+win_path() {
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -w "$1" 2>/dev/null || echo "$1"
+    else
+        # 没有 cygpath 时手工转换：/e/foo -> E:\foo
+        local p="$1"
+        if [[ "$p" =~ ^/([a-zA-Z])/(.*)$ ]]; then
+            printf '%s:\\%s' "$(echo "${BASH_REMATCH[1]}" | tr '[:lower:]' '[:upper:]')" "${BASH_REMATCH[2]//\//\\}"
+        else
+            echo "$p"
+        fi
+    fi
+}
+
+# XML 转义（& 必须先换，否则会把后面换出来的 &amp; 再换一次）
+xml_escape() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+# 递归输出目录树节点到 .evb（与 package.ps1 的 New-EvbProjectFile 等价）。
+# 关键：EVB 里文件的 <Name> 写成 "platforms\qwindows.dll" 是无效的 ——
+# 它不会自动创建中间目录，结果被平铺到根目录，Qt 就找不到平台插件。
+# 每一层目录都必须显式写一个 <Type>3</Type> 节点。
+evb_emit_dir() {
+    local dir="$1" prefix="$2" pad="$3" f name
+
+    # 先输出本层的文件。
+    # 主程序自身与归档包必须排除：把 AutoClicker.exe 当成虚拟文件再嵌一遍，
+    # 会和真实入口冲突，跑起来直接访问违例（0xC0000005）。
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        name="$(basename "$f")"
+        case "$name" in
+            AutoClicker.exe|*.zip|*.tar.gz) continue ;;
+        esac
+        {
+            printf '%s<File>\n' "$pad"
+            printf '%s\t<Type>2</Type>\n' "$pad"
+            printf '%s\t<Name>%s</Name>\n' "$pad" "$(xml_escape "$name")"
+            printf '%s\t<File>%s</File>\n' "$pad" "$(xml_escape "$(win_path "$f")")"
+            printf '%s\t<ActiveX>false</ActiveX>\n' "$pad"
+            printf '%s\t<ActiveXInstall>false</ActiveXInstall>\n' "$pad"
+            printf '%s\t<Action>0</Action>\n' "$pad"
+            printf '%s\t<OverwriteDateTime>false</OverwriteDateTime>\n' "$pad"
+            printf '%s\t<OverwriteAttributes>false</OverwriteAttributes>\n' "$pad"
+            printf '%s\t<PassCommandLine>false</PassCommandLine>\n' "$pad"
+            printf '%s</File>\n' "$pad"
+        } >> "$EVB_FILE"
+    done < <(find "$dir" -maxdepth 1 -type f | sort)
+
+    # 再递归输出本层的子目录
+    while IFS= read -r d; do
+        [ -z "$d" ] && continue
+        name="$(basename "$d")"
+        {
+            printf '%s<File>\n' "$pad"
+            printf '%s\t<Type>3</Type>\n' "$pad"
+            printf '%s\t<Name>%s</Name>\n' "$pad" "$(xml_escape "$name")"
+            printf '%s\t<Action>0</Action>\n' "$pad"
+            printf '%s\t<OverwriteDateTime>false</OverwriteDateTime>\n' "$pad"
+            printf '%s\t<OverwriteAttributes>false</OverwriteAttributes>\n' "$pad"
+            printf '%s\t<Files>\n' "$pad"
+        } >> "$EVB_FILE"
+        evb_emit_dir "$d" "$prefix$name/" "$pad\t\t"
+        printf '%s\t</Files>\n%s</File>\n' "$pad" "$pad" >> "$EVB_FILE"
+    done < <(find "$dir" -maxdepth 1 -mindepth 1 -type d | sort)
+}
+
+# 把绿色目录压成 AutoClicker_v<版本>_<日期>_win64.zip
+zip_green() {
+    step "压缩绿色目录"
+
+    local src="${1:-$PROJECT_DIR/dist}"
+    local stamp zip_path
+    stamp="$(date '+%Y%m%d')"
+    zip_path="$PROJECT_DIR/dist/AutoClicker_v${VERSION}_${stamp}_win64.zip"
+    mkdir -p "$PROJECT_DIR/dist"
+
+    rm -f "$zip_path"
+    if command -v zip >/dev/null 2>&1; then
+        ( cd "$src" && zip -qr "$zip_path" . -x '*.zip' 'config/*' 'log/*' ) || {
+            err "压缩失败"; return 1; }
+    elif command -v powershell.exe >/dev/null 2>&1; then
+        # MSYS2 里通常没有 zip —— 用 Windows 自带的 Compress-Archive。
+        # 注意它要求 -LiteralPath 的路径是 Windows 形式，交给 cygpath/win_path 转。
+        local w_src w_dst
+        w_src="$(win_path "$src")"
+        w_dst="$(win_path "$zip_path")"
+        powershell.exe -NoProfile -NonInteractive -Command \
+            "Compress-Archive -Path '$w_src\*' -DestinationPath '$w_dst' -CompressionLevel Optimal -Force" \
+            >/dev/null 2>&1 || {
+            err "Compress-Archive 压缩失败"; return 1; }
+    else
+        warn "没有 zip / powershell 可用，跳过绿色目录压缩"
+        return 0
+    fi
+
+    local size
+    size="$(awk -v b="$(stat -c %s "$zip_path" 2>/dev/null || stat -f %z "$zip_path")" 'BEGIN { printf "%.0f KB", b/1024 }')"
+    ok "绿色目录包: dist/$(basename "$zip_path") ($size)"
+    return 0
+}
+
+do_single_exe() {
+    step "打包成单文件 exe"
+
+    local dist="$PROJECT_DIR/dist"
+    local exe="$dist/AutoClicker.exe"
+    if [ ! -f "$exe" ]; then
+        err "dist/AutoClicker.exe 不存在，先跑一次不带 --single-exe 的打包"
+        return 1
+    fi
+
+    local evb_dir
+    if ! evb_dir="$(find_enigmavb)"; then
+        err "找不到 Enigma Virtual Box（enigmavbconsole.exe）"
+        echo "    下载: https://enigmaprotector.com/en/downloads.html" >&2
+        echo "    或用环境变量 ENIGMAVB_DIR 指向安装目录。" >&2
+        echo "    不想装它也行 —— 不加 --single-exe 就是默认的绿色目录模式。" >&2
+        return 1
+    fi
+    info "Enigma Virtual Box: $evb_dir"
+
+    local tmp
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/autoclicker_evb.XXXXXX")"
+    EVB_FILE="$tmp/project.evb"
+    local out_exe="$(win_path "$tmp")/boxed.exe"
+
+    # 待嵌入的文件：dist 里除主 exe 与源归档之外的全部内容
+    local file_count
+    file_count=$(find "$dist" -type f ! -name "AutoClicker.exe" ! -name "*.zip" ! -name "*.tar.gz" | wc -l | tr -d ' ')
+    info "待嵌入 $file_count 个文件"
+
+    {
+        printf '<?xml version="utf-16"?>\n'
+        printf '<>\n'
+        printf '\t<InputFile>%s</InputFile>\n' "$(xml_escape "$(win_path "$exe")")"
+        printf '\t<OutputFile>%s</OutputFile>\n' "$(xml_escape "$out_exe")"
+        printf '\t<Files>\n'
+        printf '\t\t<Enabled>true</Enabled>\n'
+        printf '\t\t<DeleteExtractedOnExit>true</DeleteExtractedOnExit>\n'
+        printf '\t\t<CompressFiles>true</CompressFiles>\n'
+        printf '\t\t<Files>\n'
+        printf '\t\t\t<File>\n'
+        printf '\t\t\t\t<Type>3</Type>\n'
+        printf '\t\t\t\t<Name>%%DEFAULT FOLDER%%</Name>\n'
+        printf '\t\t\t\t<Action>0</Action>\n'
+        printf '\t\t\t\t<OverwriteDateTime>false</OverwriteDateTime>\n'
+        printf '\t\t\t\t<OverwriteAttributes>false</OverwriteAttributes>\n'
+        printf '\t\t\t\t<Files>\n'
+    } > "$EVB_FILE"
+
+    evb_emit_dir "$dist" "" "\t\t\t\t\t"
+
+    {
+        printf '\t\t\t\t</Files>\n'
+        printf '\t\t\t</File>\n'
+        printf '\t\t</Files>\n'
+        printf '\t</Files>\n'
+        printf '\t<Registries><Enabled>false</Enabled><Registries/></Registries>\n'
+        printf '\t<Packaging><Enabled>false</Enabled></Packaging>\n'
+        printf '\t<Options>\n'
+        printf '\t\t<ShareVirtualSystem>true</ShareVirtualSystem>\n'
+        printf '\t\t<MapExecutableWithTemporaryFile>true</MapExecutableWithTemporaryFile>\n'
+        printf '\t\t<AllowRunningOfVirtualExeFiles>true</AllowRunningOfVirtualExeFiles>\n'
+        printf '\t</Options>\n'
+        printf '</>\n'
+    } >> "$EVB_FILE"
+
+    # 必须转成 UTF-16 LE + BOM，否则 enigmavbconsole 会把文件当坏项目
+    if command -v iconv >/dev/null 2>&1; then
+        iconv -f UTF-8 -t UTF-16 "$EVB_FILE" > "$EVB_FILE.u16" && mv "$EVB_FILE.u16" "$EVB_FILE"
+    else
+        warn "没有 iconv，.evb 可能不是 UTF-16，Enigma VB 会忽略文件列表"
+    fi
+
+    local log="$tmp/evb.log"
+    if ! "$evb_dir/enigmavbconsole.exe" "$(win_path "$EVB_FILE")" > "$log" 2>&1; then
+        err "Enigma VB 打包失败"
+        tail -n 20 "$log" >&2
+        rm -rf "$tmp"
+        return 1
+    fi
+    if [ ! -f "$tmp/boxed.exe" ]; then
+        err "Enigma VB 没有产出文件"
+        tail -n 20 "$log" >&2
+        rm -rf "$tmp"
+        return 1
+    fi
+
+    # 清理 dist 为单文件形态（config/ log/ 与已压好的 zip 都保留）
+    find "$dist" -mindepth 1 -maxdepth 1 \
+        ! -name "AutoClicker.exe" ! -name "config" ! -name "log" ! -name "*.zip" \
+        -exec rm -rf {} + 2>/dev/null || true
+    cp "$tmp/boxed.exe" "$exe"
+    touch "$exe"
+    local size
+    size=$(du -m "$exe" | cut -f1)
+    ok "单文件 exe 生成成功（${size} MB）"
+
+    # 除了固定名 AutoClicker.exe（方便直接双击），再留一份带版本号的，
+    # 这样 dist/ 里的东西都能按名字看出是哪一版、哪一天打的。
+    local stamp versioned
+    stamp="$(date '+%Y%m%d')"
+    versioned="$dist/AutoClicker_v${VERSION}_${stamp}_single_win64.exe"
+    cp "$exe" "$versioned"
+    touch "$versioned"
+    ok "带版本号的副本: $(basename "$versioned")"
+
+    info "dist/ 已清理为单文件形态（只留 exe 与压缩包）"
+
+    rm -rf "$tmp"
+    return 0
+}
+
+# ================================================================ 主流程
+
 echo ""
+printf '%sAutoClicker 打包脚本%s\n' "$C_STEP" "$C_OFF"
+info "项目: $PROJECT_DIR"
+info "平台: $PLATFORM"
+info "版本: $VERSION"
+_forms=""
+[ "$WANT_GREEN" -eq 1 ] && _forms="绿色目录 zip"
+[ "$WANT_SINGLE" -eq 1 ] && _forms="${_forms:+$_forms + }单文件 exe"
+info "形态: $_forms"
+
+if show_build_status; then
+    BUILD_FRESH=1
+else
+    BUILD_FRESH=0
+fi
 
 if [ "$CHECK_ONLY" -eq 1 ]; then
-  echo "[INFO] --check-only 模式：仅检测，不执行打包。"
-  echo ""
-  [ "$BUILD_FRESH" -eq 1 ] && exit 0 || exit 2
+    if [ "$BUILD_FRESH" -eq 1 ]; then exit 0; else exit 2; fi
 fi
 
-# 产物已是最新时，先问一句要不要白打一遍（非交互场景自动继续）
 if [ "$BUILD_FRESH" -eq 1 ] && [ "$FORCE" -eq 0 ]; then
-  if [ -t 0 ]; then
-    echo ""
-    printf '产物已是最新，仍要重新打包吗？[y/N] '
-    read -r ans
-    case "$ans" in
-      y|Y|yes|YES)
-        echo ""
-        ;;
-      *)
-        echo ""
-        ok "已跳过打包。"
-        echo ""
-        exit 0
-        ;;
-    esac
-  else
-    warn "[INFO] 非交互环境，继续打包（用 --check-only 可只检测）。"
-    echo ""
-  fi
+    if [ -t 0 ]; then
+        printf '\n产物已是最新，仍要重新打包吗？[y/N] '
+        read -r answer
+        case "$answer" in
+            [yY]*) : ;;
+            *) echo "已跳过打包。"; exit 0 ;;
+        esac
+    else
+        info "非交互环境，继续打包（用 --check-only 可只检测）。"
+    fi
 fi
 
-if ! find_python; then
-  err "[ERROR] 未找到可用的 Python 3，请安装 Python 3.10+ 或先运行 script/install.sh"
-  exit 1
+if [ "$DO_BUILD" -eq 1 ]; then
+    if [ "$PLATFORM" = "windows" ]; then
+        do_build || exit 1
+    else
+        step "跳过编译"
+        warn "连点功能依赖 Win32 API，非 Windows 平台不编译（只有界面没有功能）"
+    fi
+else
+    step "跳过编译（--no-build）"
 fi
-echo "[INFO] Python  : $PY_EXE  [$PY_KIND]"
-echo ""
 
-[ "$DO_README" -eq 1 ] && gen_readme || warn "[1/4] Skip README generation."
-
-# 两种形态默认都打。只要一种用 --skip-single / --skip-green。
-WANT_SINGLE=$(( BUILD_EXE == 1 && SKIP_SINGLE == 0 ? 1 : 0 ))
-WANT_GREEN=$((  BUILD_EXE == 1 && SKIP_GREEN  == 0 ? 1 : 0 ))
+# 两种形态默认都产：-SingleExe/--single-exe 只产单文件，--skip-single 只产绿色目录。
+GREEN_STAGE="$PROJECT_DIR/build/green"
+BOTH_FORMS=0
+[ "$WANT_GREEN" -eq 1 ] && [ "$WANT_SINGLE" -eq 1 ] && BOTH_FORMS=1
 
 if [ "$BUILD_EXE" -eq 1 ]; then
-  # dist/ 先清空，免得上一轮的旧产物混进来
-  rm -rf "$PROJECT_DIR/dist"
-  mkdir -p "$PROJECT_DIR/dist"
+    if [ "$PLATFORM" = "windows" ]; then
+        # dist/ 一律先清空：上一轮的旧产物如果留着，会被单文件那步当成依赖嵌进去。
+        rm -rf "$PROJECT_DIR/dist"
+        mkdir -p "$PROJECT_DIR/dist"
 
-  if [ "$WANT_SINGLE" -eq 1 ]; then
-    build_exe onefile
-  else
-    warn "[2/4] Skip single exe (--skip-single / --no-exe)."
-  fi
+        if [ "$WANT_GREEN" -eq 1 ]; then
+            # 两种都要时先铺到暂存区，压完 zip 再铺一份给单文件那步
+            if [ "$BOTH_FORMS" -eq 1 ]; then
+                TARGET_DIR="$GREEN_STAGE" build_exe || exit 1
+                zip_green "$GREEN_STAGE" || exit 1
+            else
+                build_exe || exit 1
+                zip_green "$PROJECT_DIR/dist" || exit 1
+            fi
+        fi
 
-  if [ "$WANT_GREEN" -eq 1 ]; then
-    build_exe onedir
-  else
-    warn "[3/4] Skip green dir zip (--skip-green / --no-exe)."
-  fi
+        if [ "$WANT_SINGLE" -eq 1 ]; then
+            if [ "$BOTH_FORMS" -eq 1 ]; then
+                # 把绿色目录整体复制一份到 dist/，EVB 从这里收文件
+                cp -r "$GREEN_STAGE"/. "$PROJECT_DIR/dist"/
+            elif [ "$WANT_GREEN" -eq 0 ]; then
+                build_exe || exit 1
+            fi
+            do_single_exe || exit 1
+            rm -rf "$GREEN_STAGE"
+        fi
+    else
+        step "跳过收集依赖"
+        warn "非 Windows 平台无法产出可运行程序（当前平台: $PLATFORM）"
+    fi
 else
-  warn "[2/4] [3/4] Skip both forms (--no-exe)."
+    step "跳过收集依赖（--no-exe）"
 fi
 
-# 源码归档只在 --with-source 时打
 if [ "$WITH_SOURCE" -eq 1 ] && [ "$DO_ZIP" -eq 1 ]; then
-  pack_source
-elif [ "$WITH_SOURCE" -eq 1 ]; then
-  warn "[4/4] Skip source archive (--no-zip)."
+    pack_source || exit 1
 else
-  printf '%s[4/4] Skip source archive (用 --with-source 可额外打一份).%s\n' "$C_DIM" "$C_OFF"
+    step "跳过源码归档"
+    info "用 --with-source 可额外打一份"
 fi
 
 echo ""
-echo "============================================"
-ok " Done!"
-[ "$DO_README" -eq 1 ] && echo "   README : README.md"
-if [ -d "$PROJECT_DIR/dist" ]; then
-  while IFS= read -r f; do
-    [ -z "$f" ] && continue
-    printf '   %-46s %5d MB\n' "$(basename "$f")" \
-      "$(( $(stat -c%s "$f" 2>/dev/null || echo 0) / 1048576 ))"
-  done <<EOF
-$(find "$PROJECT_DIR/dist" -maxdepth 1 -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.gz' \) 2>/dev/null | sort)
-EOF
-fi
-[ "$WITH_SOURCE" -eq 1 ] && [ "$DO_ZIP" -eq 1 ] && echo "   Archive: dist/"
-echo "============================================"
-echo ""
+printf '%s打包完成。%s\n' "$C_OK" "$C_OFF"
+info "dist: $PROJECT_DIR/dist"
+# 按名字列一遍，和 package.ps1 的输出保持一致
+find "$PROJECT_DIR/dist" -maxdepth 1 -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.tar.gz' \) \
+     -printf '%f\n' 2>/dev/null | sort | while IFS= read -r n; do
+    f="$PROJECT_DIR/dist/$n"
+    size="$(awk -v b="$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f" 2>/dev/null || echo 0)" \
+        'BEGIN { printf "%.2f MB", b/1048576 }')"
+    printf '  %-48s %10s\n' "$n" "$size"
+done
+exit 0

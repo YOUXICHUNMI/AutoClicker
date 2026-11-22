@@ -1,39 +1,30 @@
-# 虚拟环境
-.venv/
-venv/
-
-# Python 缓存
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-*.egg-info/
-
-# 日志和数据库
-*.log
-log/
-*.db
-*.sqlite3
-
-# 运行期数据目录（正常经启动脚本/exe 运行时落在 dist/ 下，
-# 直接跑 `python main.py` 时才会落到项目根，同样不该进版本库）
-/config/
-/dist/log/
-/dist/config/
-
-# 打包产物
-dist/
+# ---- 构建产物 ----
 build/
+build-*/
+cmake-build-*/
+out/
+*.o
+*.obj
 
-# 环境变量
-.env
-.env.local
+# ---- 打包产物 ----
+dist/
 
-# IDE
-.vscode/
+# ---- IDE ----
 .idea/
-*.iml
+.vscode/
+*.user
+*.user.*
 
-# 操作系统
+# ---- 运行期数据（配置与日志，不进仓库）----
+config/
+log/
+
+# ---- 系统垃圾 ----
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# ---- CMake ----
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json

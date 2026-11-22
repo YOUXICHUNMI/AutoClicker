@@ -1,65 +1,43 @@
 @echo off
-rem ============================================================
-rem  AutoClicker 打包脚本 (cmd)
+rem AutoClicker 打包脚本（Windows 批处理包装）
 rem
-rem  这是 script\package.ps1 的薄包装：负责找到 PowerShell 并转调，
-rem  真正的逻辑只有一份，避免 cmd 里重复实现模板替换与压缩。
-rem  默认两种形态都产（无需额外开关）：
-rem    dist\AutoClicker.exe                            单文件 exe
-rem    dist\AutoClicker_v<版本>_<日期>_single_win64.exe  同一文件的带版本号副本
-rem    dist\AutoClicker_v<版本>_<日期>_win64.zip         绿色目录 zip
+rem 本脚本只是薄包装：找一个可用的 PowerShell，把参数原样转给 package.ps1。
+rem 用法与 package.ps1 完全一致，例如：
+rem     script\package.cmd
+rem     script\package.cmd -Version 1.2.0
+rem     script\package.cmd -CheckOnly
+rem     script\package.cmd -SkipBuild -SkipZip
+rem     script\package.cmd -SingleExe    (打包成单个 exe)
 rem
-rem  用法:
-rem    script\package.cmd
-rem    script\package.cmd -Version 1.1.0
-rem    script\package.cmd -SkipSingle      (只打绿色目录 zip)
-rem    script\package.cmd -SkipGreen       (只打单文件 exe)
-rem    script\package.cmd -SkipExe         (两种都不打)
-rem    script\package.cmd -WithSource
-rem    script\package.cmd -CheckOnly
-rem    script\package.cmd -SkipZip
-rem    script\package.cmd -SkipReadme
-rem    script\package.cmd -SkipDeps
-rem ============================================================
-setlocal EnableExtensions
+rem 注意：文件存为 GBK + CRLF。cmd 按当前代码页逐字节读批处理，
+rem 中途改 chcp 会让后半段中文按旧码页解释而乱码，所以这里不切码页。
+
+setlocal
 
 set "SCRIPT_DIR=%~dp0"
-if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
-set "PROJECT_DIR=%SCRIPT_DIR%\.."
-pushd "%PROJECT_DIR%" >nul 2>&1 || (echo [ERROR] 无法进入项目目录 & exit /b 1)
-set "PROJECT_DIR=%CD%"
-popd >nul
+set "PS1=%SCRIPT_DIR%package.ps1"
 
-set "PS1=%SCRIPT_DIR%\package.ps1"
 if not exist "%PS1%" (
-    echo [ERROR] 找不到 %PS1%
+    echo [x] 找不到 package.ps1: %PS1%
     exit /b 1
 )
 
-rem 优先用 pwsh (PowerShell 7)，否则回退到 Windows PowerShell 5.1
-set "PSEXE="
-where pwsh >nul 2>&1 && set "PSEXE=pwsh"
-if not defined PSEXE (
-    where powershell >nul 2>&1 && set "PSEXE=powershell"
-)
-if not defined PSEXE (
-    echo [ERROR] 未找到 PowerShell，请先安装 PowerShell 5.1 或更高版本
-    exit /b 1
+rem 优先用新版的 pwsh（PowerShell 7+），没有则退回系统自带的 powershell
+where pwsh >nul 2>nul
+if not errorlevel 1 (
+    set "PS_EXE=pwsh"
+    goto :run
 )
 
-"%PSEXE%" -NoProfile -ExecutionPolicy Bypass -File "%PS1%" %*
-set "RC=%ERRORLEVEL%"
-
-rem 退出码约定（与 ps1 一致）：
-rem   0 = 成功 / 产物已是最新
-rem   2 = 仅检测模式下发现产物过期（不是错误）
-rem   其它 = 真失败
-if "%RC%"=="2" (
-    echo.
-    echo [INFO] 检测结果：dist\ 里的产物已过期，需要重新打包。
-    echo        去掉 -CheckOnly 再跑一次即可。
-) else if not "%RC%"=="0" (
-    echo.
-    echo [ERROR] 打包失败，退出码 %RC%
+where powershell >nul 2>nul
+if not errorlevel 1 (
+    set "PS_EXE=powershell"
+    goto :run
 )
-endlocal & exit /b %RC%
+
+echo [x] 找不到 PowerShell，请安装 PowerShell 7 或确认系统自带 powershell 可用
+exit /b 1
+
+:run
+"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%PS1%" %*
+exit /b %errorlevel%
