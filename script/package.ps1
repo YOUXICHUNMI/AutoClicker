@@ -160,6 +160,8 @@ function Find-QtDir {
         $candidates += ($env:CMAKE_PREFIX_PATH -split ';')
     }
     if ($env:QTDIR) { $candidates += $env:QTDIR }
+    # install-qt-action 只设 QT_ROOT_DIR（GitHub Actions 里常见）
+    if ($env:QT_ROOT_DIR) { $candidates += $env:QT_ROOT_DIR }
 
     # 常见安装位置：C:\Qt\6.8.0\{msvc2019_64,mingw_64}
     foreach ($base in @("C:\Qt", "D:\Qt", "E:\Qt")) {

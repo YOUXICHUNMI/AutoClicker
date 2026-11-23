@@ -76,10 +76,18 @@ jobs:
         shell: pwsh
         run: |
           $env:ENIGMAVB_DIR = 'C:\EnigmaVB'
-          $ver = '${{ steps.ver.outputs.value }}'
-          $args = @('-Force', '-Version', $ver)
-          if (-not (Test-Path 'C:\EnigmaVB\enigmavbconsole.exe')) { $args += '-SkipSingle' }
-          ./script/package.ps1 @args
+          # 用哈希表 splat 而不是数组 splat。
+          # 数组 splat 传给 .ps1 文件时不做参数名解析，'-Force' 会被当成
+          # -Version 的位置实参（CI 里表现为「版本: -Force」），是个安静错绑。
+          # QtDir 显式传：install-qt-action 只设 QT_ROOT_DIR，不设
+          # CMAKE_PREFIX_PATH/QTDIR，脚本的自动探测扫不到 actions 的安装位。
+          $pkgArgs = @{
+            Force   = $true
+            Version = '${{ steps.ver.outputs.value }}'
+            QtDir   = $env:QT_ROOT_DIR
+          }
+          if (-not (Test-Path 'C:\EnigmaVB\enigmavbconsole.exe')) { $pkgArgs.SkipSingle = $true }
+          ./script/package.ps1 @pkgArgs
 
       - name: Show dist
         shell: pwsh
