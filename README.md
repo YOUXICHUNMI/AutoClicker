@@ -290,21 +290,32 @@ UTF-8，所以现在在 CLion 的 Build 窗口里看到的是正常中文。
 
 | 事件 | 行为 |
 | --- | --- |
-| push 到 `main` | 编译 + 打包，产物作为 workflow artifact 保留 30 天 |
-| `pull_request` | 同上（只构建，不发版） |
-| push 形如 `v1.2.0` 的 tag | 额外自动建 GitHub Release，把两平台产物挂上去 |
-| 手动 `workflow_dispatch` | 在 Actions 页面点「Run workflow」 |
+| push 到 `cpp-main`（默认分支）或 `main` | 编译 + 打包，并**滚动更新一个 Release** |
+| `pull_request` | 只构建，产物作为 workflow artifact 保留 30 天，**不发版** |
+| push 形如 `v1.2.0` 的 tag | 用该 tag 发正式 Release |
+| 手动 `workflow_dispatch` | 在 Actions 页面点「Run workflow」，同样会发版 |
 
-两个 job 各自在原生 runner 上跑（Qt 不能交叉编译，Windows 产物必须在 Windows
+**Release 是每次都发的，不再只在打 tag 时发。** 分支推送走「滚动发布」：标签取
+`CMakeLists.txt` 里的 `VERSION`（如 `v1.0.0`），同名 Release 每次推送覆盖更新，
+点进 Releases 页就能直接下载最新产物，不用去 Actions 里翻 artifact。
+
+版本号只有一处权威来源 —— `CMakeLists.txt` 的 `project(... VERSION x.y.z)`。
+打 tag 时优先用 tag 名（`v1.2.0` → `1.2.0`），否则读 CMakeLists，两个平台共用
+同一个 `resolve version` 步骤，不会出现 Windows 报 `1.0.0`、Linux 报 `0.0.0`。
+
+两个构建 job 各自在原生 runner 上跑（Qt 不能交叉编译，Windows 产物必须在 Windows
 上构建）：
 
 - **windows** —— `jurplel/install-qt-action` 装 Qt 6.8.2 (win64_mingw) + Ninja，
   再尽力装 Enigma Virtual Box（装不上就自动降级成只产绿色目录），然后**直接调用
-  仓库自己的 `script/package.ps1 -Force`**，所以 CI 产出的东西和你本机跑出来的
-  完全一致；上传 `dist/*.exe` 与 `dist/*.zip`
+  仓库自己的 `script/package.ps1 -Force -Version <版本>`**，所以 CI 产出的东西和你
+  本机跑出来的完全一致；上传 `dist/*.exe` 与 `dist/*.zip`
 - **linux** —— `apt-get` 装 `qt6-base-dev` 与 `libgl1-mesa-dev`，用
   `cmake -G Ninja` 编译，产出 `AutoClicker_v<版本>_<日期>_single_linux64` 与
   `AutoClicker_v<版本>_<日期>_linux64.tar.gz`
+
+发布 job 用 `always()`，所以一个平台挂了另一个平台的产物照样发得出去（不会因为
+Linux 编译失败就什么都下不到）；但两个都失败时会明确报错而不是发一个空 Release。
 
 > Linux 版只有界面可用：连点引擎依赖 Win32 的 `SendInput` / `PostMessage`，
 > 在 Linux 上点「开始连点」会明确报错拒绝，热键也不会注册。这是设计如此，

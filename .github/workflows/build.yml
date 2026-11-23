@@ -1,19 +1,24 @@
 name: Build
 
 # 触发方式：
-#   - 推送到 main
-#   - 打 v* 标签（会额外发 Release）
+#   - 推送到 cpp-main（默认分支，C++ 版）或 main
+#   - 打 v* 标签 —— 直接用标签名做版本号
 #   - 手动触发
+#
+# 每次运行都会发/更新一个 Release（见最后一个 job）：
+#   - 分支推送 → 滚动发布，标签取 CMakeLists.txt 里的 VERSION（如 v1.0.0），
+#                内容随每次推送刷新，方便直接下载最新产物
+#   - tag 推送 → 用该 tag 发布正式版
 on:
   push:
-    branches: [ main ]
+    branches: [ cpp-main, main ]
     tags: [ 'v*' ]
   pull_request:
-    branches: [ main ]
+    branches: [ cpp-main, main ]
   workflow_dispatch:
 
 permissions:
-  contents: write        # 打 tag 时需要创建 Release
+  contents: write        # 创建 / 更新 Release 需要
 
 jobs:
   # ==========================================================
@@ -25,6 +30,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $ver = $env:GITHUB_REF_NAME -replace '^v', ''
+          } else {
+            $m = Select-String -Path CMakeLists.txt -Pattern 'VERSION\s+(\d+\.\d+\.\d+)'
+            if (-not $m) { throw 'CMakeLists.txt 里找不到 VERSION' }
+            $ver = $m.Matches[0].Groups[1].Value
+          }
+          "value=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "版本号: $ver"
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -50,12 +69,15 @@ jobs:
           if (Test-Path 'C:\EnigmaVB\enigmavbconsole.exe') { Write-Host 'EnigmaVB ready' }
           else { Write-Warning 'EnigmaVB 未装上，单文件 exe 会被跳过' }
 
-      # 走项目自己的打包脚本，保证 CI 与本地产出一致
+      # 走项目自己的打包脚本，保证 CI 与本地产出一致。
+      # 注意：C++ 版 package.ps1 没有 -SkipReadme（那是 Python 版的参数），
+      # 传了会直接 NamedParameterNotFound 挂掉。
       - name: Package
         shell: pwsh
         run: |
           $env:ENIGMAVB_DIR = 'C:\EnigmaVB'
-          $args = @('-Force','-SkipReadme')
+          $ver = '${{ steps.ver.outputs.value }}'
+          $args = @('-Force', '-Version', $ver)
           if (-not (Test-Path 'C:\EnigmaVB\enigmavbconsole.exe')) { $args += '-SkipSingle' }
           ./script/package.ps1 @args
 
@@ -84,6 +106,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            VER="$(grep -m1 -oE 'VERSION[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt \
+                  | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+          fi
+          [ -n "$VER" ] || { echo '取不到版本号'; exit 1; }
+          echo "value=$VER" >> "$GITHUB_OUTPUT"
+          echo "版本号: $VER"
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -105,17 +142,17 @@ jobs:
           file build/release/AutoClicker
 
       - name: Package archives
+        env:
+          VER: ${{ steps.ver.outputs.value }}
         run: |
           set -euo pipefail
-          VER="${GITHUB_REF_NAME#v}"
-          [[ "$VER" =~ ^[0-9] ]] || VER="0.0.0"
           STAMP="$(date +%Y%m%d)"
           mkdir -p dist
 
           # 单文件：Linux 上就是那个可执行文件本身（Qt 依赖由系统提供）
           cp build/release/AutoClicker "dist/AutoClicker_v${VER}_${STAMP}_single_linux64"
 
-          # 绿色目录：exe + 所有运行时依赖，解压即用
+          # 绿色目录：可执行文件 + 所有运行时依赖，解压即用
           GREEN="build/green/AutoClicker"
           mkdir -p "$GREEN"
           cp build/release/AutoClicker "$GREEN/"
@@ -145,27 +182,70 @@ jobs:
           retention-days: 30
 
   # ==========================================================
-  #  打 tag 时把两侧产物发到 Release
+  #  发布 Release
+  #    - 分支推送 → 滚动发布（tag = v<CMakeLists 里的 VERSION>），内容每次刷新
+  #    - tag 推送 → 用该 tag 发正式版
+  #  任一平台构建失败也照常发布另一端已成功的产物（always()）。
   # ==========================================================
   release:
     name: Release
-    if: startsWith(github.ref, 'refs/tags/v')
     needs: [ windows, linux ]
+    if: ${{ always() && !cancelled() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || github.event_name == 'push') }}
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            NAME="${GITHUB_REF_NAME}"
+            NOTES_FROM_TAGS="true"
+          else
+            VER="$(grep -m1 -oE 'VERSION[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt \
+                  | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+            [ -n "$VER" ] || { echo '取不到版本号'; exit 1; }
+            TAG="v${VER}"
+            NAME="v${VER} (${GITHUB_REF_NAME} ${GITHUB_SHA:0:7})"
+            NOTES_FROM_TAGS="false"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "notes=$NOTES_FROM_TAGS" >> "$GITHUB_OUTPUT"
+          echo "发布标签: $TAG"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: out
+          pattern: AutoClicker-*
+          merge-multiple: true
 
-      - name: Flatten
+      - name: Check files
         run: |
-          mkdir -p out
-          find artifacts -type f -exec cp -n {} out/ \;
+          set -euo pipefail
           ls -lh out
+          if [ -z "$(ls -A out)" ]; then
+            echo '::error::没有任何产物可发布（两个平台都失败了？）'
+            exit 1
+          fi
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
           files: out/*
-          generate_release_notes: true
+          generate_release_notes: ${{ steps.meta.outputs.notes == 'true' }}
+          make_latest: true
+          fail_on_unmatched_files: true
+          body: |
+            自动构建产物。
+
+            - 提交：${{ github.sha }}
+            - 分支：${{ github.ref_name }}
+            - 平台：Windows（单文件 exe + 绿色目录 zip）、Linux（单文件 + tar.gz）

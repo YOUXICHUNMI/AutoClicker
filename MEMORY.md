@@ -791,20 +791,33 @@ stash 回 `std::thread` 版第 1 轮就 `EXIT=3`。
 | --- | --- | --- |
 | `windows` | `windows-latest` | `dist/*.exe`、`dist/*.zip`（走项目自己的 `package.ps1`） |
 | `linux` | `ubuntu-latest` | `AutoClicker_v<ver>_<date>_single_linux64`、`AutoClicker_v<ver>_<date>_linux64.tar.gz` |
-| `release` | `ubuntu-latest` | tag 触发时把前两个 job 的产物挂到 GitHub Release |
+| `release` | `ubuntu-latest` | 把前两个 job 的产物挂到 GitHub Release |
 
-触发：push 到 `main`、PR、push `v*` tag、手动 `workflow_dispatch`。
+触发：push 到 **`cpp-main`（默认分支）或 `main`**、PR、push `v*` tag、手动 `workflow_dispatch`。
 
 设计要点：
 
-- **windows job 不重写打包逻辑**，直接 `./script/package.ps1 -Force -SkipReadme`，
+- **`release` job 每次运行都发版，不再只在 tag 时发。** 分支推送走「滚动发布」：
+  标签取 `CMakeLists.txt` 的 `VERSION`（如 `v1.0.0`），同名 Release 每次推送覆盖更新，
+  用户在 Releases 页就能直接下最新产物，不用去 Actions 里翻 artifact。tag 推送时
+  优先用 tag 名。`if` 用 `always() && !cancelled() && (...push/tag/dispatch)`，
+  一个平台失败另一个照样发得出去；两个都失败时发布步骤明确 `::error::` 退出，
+  不会发一个空 Release。
+- **版本号只有一个权威来源**：`CMakeLists.txt` 的 `project(... VERSION x.y.z)`。
+  windows 与 linux 各有一个 `resolve version` 步骤（tag 优先、否则读 CMakeLists），
+  两边共用同一套规则，避免出现 Windows 报 `1.0.0`、Linux 报 `0.0.0`。
+- **windows job 不重写打包逻辑**，直接 `./script/package.ps1 -Force -Version <ver>`，
   保证 CI 与本地产出一致；装了 Enigma Virtual Box 才产单文件，装不上就
   `-SkipSingle` 只产绿色目录（`continue-on-error: true`）。
+  **注意 C++ 版 `package.ps1` 没有 `-SkipReadme`**（那是 Python 版的参数），
+  传了会直接 `NamedParameterNotFound` 挂掉 —— 曾经踩过。
 - **Qt 版本固定在 action 里**（6.8.2 / win64_mingw），不用 runner 自带的。
-- **linux job 必须装齐 PyQt6 的 xcb 依赖**（`libgl1 libegl1 libxkbcommon-x11-0
-  libdbus-1-3 libxcb-*`），否则 PyInstaller 能打出包但运行时找不到平台插件。
+- **linux job 装的是 Qt6 开发包**（`qt6-base-dev libgl1-mesa-dev`），不是 PyQt6 的
+  xcb 那一套 —— 那是 Python 版才需要的，C++ 版直接链系统 Qt。
 - **不能交叉编译**：Windows 产物必须在 windows runner 上构建，Linux 同理。
-- 版本号从 tag 取（`${GITHUB_REF_NAME#v}`），非 tag 构建退化成 `0.0.0`。
+- **workflow 的分支过滤必须包含默认分支**。仓库默认分支是 `cpp-main`，如果只写
+  `branches: [ main ]`，推 C++ 代码根本不会触发 —— 这是「Actions 里看不到新记录」
+  的最常见原因。
 
 ---
 
