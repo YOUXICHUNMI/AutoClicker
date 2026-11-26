@@ -833,6 +833,11 @@ stash 回 `std::thread` 版第 1 轮就 `EXIT=3`。
   `undefined reference to '__imp___argc'`。只装 Qt 不装工具链必然踩。
   另外 Package 步还要显式定位 `$env:QT_ROOT_DIR\..\..\Tools\mingw*\bin\g++.exe`
   并设 `CC`/`CXX`，因为 PATH 顺序不可靠（runner 的 GCC 15 排在前面）。
+- **滚动发布要把旧产物清掉**。分支推送时 tag 固定是 `v<VERSION>`，同一个 Release
+  被反复发布；`softprops/action-gh-release` 只追加不清理，旧日期的产物会一直堆在
+  里面（实测出现过 `20261123` 与 `20261126` 两批并存）。发布前用
+  `gh release delete-asset` 清空该 tag 的 assets；**只删 assets，别删 Release 或 tag**，
+  否则 tag 推送会把自己的 tag 删掉。tag 推送（正式版）不加这一步。
 
 ---
 

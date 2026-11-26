@@ -299,6 +299,10 @@ UTF-8，所以现在在 CLion 的 Build 窗口里看到的是正常中文。
 `CMakeLists.txt` 里的 `VERSION`（如 `v1.0.0`），同名 Release 每次推送覆盖更新，
 点进 Releases 页就能直接下载最新产物，不用去 Actions 里翻 artifact。
 
+滚动发布时会先清空该 tag 下已有的产物再上传 —— 否则旧日期的包会一直堆在同一个
+Release 里（实测出现过 `20261123` 和 `20261126` 两批并存）。只清 assets，不动
+Release 与 tag 本身；打 tag 的正式发布不会执行这一步，历史版本保持原样。
+
 版本号只有一处权威来源 —— `CMakeLists.txt` 的 `project(... VERSION x.y.z)`。
 打 tag 时优先用 tag 名（`v1.2.0` → `1.2.0`），否则读 CMakeLists，两个平台共用
 同一个 `resolve version` 步骤，不会出现 Windows 报 `1.0.0`、Linux 报 `0.0.0`。
@@ -306,10 +310,13 @@ UTF-8，所以现在在 CLion 的 Build 窗口里看到的是正常中文。
 两个构建 job 各自在原生 runner 上跑（Qt 不能交叉编译，Windows 产物必须在 Windows
 上构建）：
 
-- **windows** —— `jurplel/install-qt-action` 装 Qt 6.8.2 (win64_mingw) + Ninja，
-  再尽力装 Enigma Virtual Box（装不上就自动降级成只产绿色目录），然后**直接调用
-  仓库自己的 `script/package.ps1 -Force -Version <版本>`**，所以 CI 产出的东西和你
-  本机跑出来的完全一致；上传 `dist/*.exe` 与 `dist/*.zip`
+- **windows** —— `jurplel/install-qt-action` 装 Qt 6.8.2 (win64_mingw) **及其配套的
+  mingw 13.1 工具链**（`tools: 'tools_mingw1310'`）+ Ninja，再尽力装 Enigma Virtual Box
+  （装不上就自动降级成只产绿色目录），然后**直接调用仓库自己的
+  `script/package.ps1 -Force -Version <版本>`**，所以 CI 产出的东西和你本机跑出来的
+  完全一致；上传 `dist/*.exe` 与 `dist/*.zip`
+  > 不装配套工具链会踩链接错误：runner 自带的 `C:\mingw64` 是 GCC 15，与 Qt 6.8.2
+  > 的 GCC 13.1 ABI 不匹配，报 `undefined reference to '__imp___argc'`。
 - **linux** —— `apt-get` 装 `qt6-base-dev` 与 `libgl1-mesa-dev`，用
   `cmake -G Ninja` 编译，产出 `AutoClicker_v<版本>_<日期>_single_linux64` 与
   `AutoClicker_v<版本>_<日期>_linux64.tar.gz`
