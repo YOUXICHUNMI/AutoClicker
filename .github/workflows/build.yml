@@ -117,9 +117,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AutoClicker-windows
+          # 只上传带版本号与日期的那份（AutoClicker_v<ver>_<日期>_*）。
+          # dist 里还有一个不带版本号的 AutoClicker.exe，它是 dist 的现场产物，
+          # 传到 Release 里会和命名规范冲突，也让同一份东西出现两个文件名。
           path: |
-            dist/*.exe
-            dist/*.zip
+            dist/AutoClicker_v*_single_win64.exe
+            dist/AutoClicker_v*_win64.zip
           if-no-files-found: error
           retention-days: 30
 
