@@ -818,6 +818,21 @@ stash 回 `std::thread` 版第 1 轮就 `EXIT=3`。
 - **workflow 的分支过滤必须包含默认分支**。仓库默认分支是 `cpp-main`，如果只写
   `branches: [ main ]`，推 C++ 代码根本不会触发 —— 这是「Actions 里看不到新记录」
   的最常见原因。
+- **数组 splat 传给 .ps1 文件不做参数名解析，只按位置绑。** 这是 CI 里最阴的一个坑：
+  `$pkgArgs = @('-Force','-Version',$ver)` 配 `./script/package.ps1 @pkgArgs`，
+  PowerShell 会把 `-Force` 当成第一个位置参数（也就是 `-Version` 的值），
+  `-Version` 成了第二个位置参数（`-QtDir`），于是日志里出现「版本: -Force」和
+  「指定的 QtDir 里没有 bin\windeployqt.exe：-Version」。改用**哈希表 splat**
+  （`@{ Force=$true; Version=$ver; QtDir=$env:QT_ROOT_DIR }`）或直接写命名参数。
+- **`install-qt-action` 只设 `QT_ROOT_DIR`，不设 `CMAKE_PREFIX_PATH`/`QTDIR`。**
+  `Find-QtDir` 的自动探测因此扫不到动作安装的 Qt，必须显式传 `-QtDir $env:QT_ROOT_DIR`；
+  脚本的候选列表也已补上 `QT_ROOT_DIR`，让别处复用不必再传。
+- **必须装 Qt 配套的 mingw 工具链**：`install-qt-action` 加 `tools: 'tools_mingw1310'`。
+  runner 镜像自带的 `C:\mingw64` 是 GCC 15，而 Qt 6.8.2 的 `mingw_64` 是 GCC 13.1，
+  两者 ABI 不匹配，链接 `libQt6EntryPoint.a` 会报
+  `undefined reference to '__imp___argc'`。只装 Qt 不装工具链必然踩。
+  另外 Package 步还要显式定位 `$env:QT_ROOT_DIR\..\..\Tools\mingw*\bin\g++.exe`
+  并设 `CC`/`CXX`，因为 PATH 顺序不可靠（runner 的 GCC 15 排在前面）。
 
 ---
 

@@ -52,6 +52,10 @@ jobs:
           host: windows
           target: desktop
           arch: win64_mingw
+          # 必须装配套的 mingw 工具链。runner 镜像自带的 C:\mingw64 是 GCC 15，
+          # 与 Qt 6.8.2 的 mingw_64（GCC 13.1）ABI 不匹配，链接 Qt6EntryPoint.a
+          # 会报 undefined reference to `__imp___argc`。只装 Qt 不装工具链就会踩。
+          tools: 'tools_mingw1310'
           cache: true
 
       - name: Install Ninja
@@ -87,6 +91,22 @@ jobs:
             QtDir   = $env:QT_ROOT_DIR
           }
           if (-not (Test-Path 'C:\EnigmaVB\enigmavbconsole.exe')) { $pkgArgs.SkipSingle = $true }
+
+          # 强制用 Qt 配套的 mingw 编译器。PATH 里 runner 自带的 C:\mingw64 排在前面，
+          # 光靠 PATH 顺序不可靠，所以直接给 CMake 指定 CC/CXX（首次 configure 读取）。
+          $qtBase = Split-Path (Split-Path $env:QT_ROOT_DIR -Parent) -Parent
+          $gxx = Get-ChildItem (Join-Path $qtBase 'Tools') -Directory -Filter 'mingw*' -ErrorAction SilentlyContinue |
+                 ForEach-Object { Join-Path $_.FullName 'bin\g++.exe' } |
+                 Where-Object { Test-Path $_ } |
+                 Select-Object -First 1
+          if ($gxx) {
+            $env:CXX = $gxx
+            $env:CC  = Join-Path (Split-Path $gxx -Parent) 'gcc.exe'
+            Write-Host "编译器: $($env:CXX)"
+          } else {
+            Write-Warning '没找到 Qt 配套的 mingw 工具链，回退到 PATH 里的 g++'
+          }
+
           ./script/package.ps1 @pkgArgs
 
       - name: Show dist
